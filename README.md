@@ -104,3 +104,7 @@ deploy/setup.sh export-answers [file]
 - **nginx output:** `nginx/*.template`. **Compose stacks:** `compose/*.yml`. **systemd units:** `systemd/*.tmpl`.
 
 Requirements on the server: Linux with systemd, bash ≥ 4, sudo. Docker, nginx, certbot and the other packages are installed when missing, after asking.
+
+## License
+
+[MIT](LICENSE) © 2026 Amin Babu
