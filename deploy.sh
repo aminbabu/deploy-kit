@@ -85,12 +85,16 @@ dp_health() {
   local i api_ok=0 fe_ok=1
   dp_fe_on && fe_ok=0
   for i in $(seq 1 45); do
-    [[ $api_ok == 1 ]] || { curl -fsS -o /dev/null --max-time 5 -H "Host: ${HEALTH_HOST}" "http://127.0.0.1:${API_PORT}/up" && api_ok=1; }
-    [[ $fe_ok == 1 ]] || { curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${FRONTEND_PORT}/" && fe_ok=1; }
+    [[ $api_ok == 1 ]] || { curl -fsS -o /dev/null --max-time 5 -H "Host: ${HEALTH_HOST}" "http://127.0.0.1:${API_PORT}${HEALTH_PATH:-/up}" 2>/dev/null && api_ok=1; }
+    [[ $fe_ok == 1 ]] || { curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${FRONTEND_PORT}/" 2>/dev/null && fe_ok=1; }
     [[ $api_ok == 1 && $fe_ok == 1 ]] && { dp_ok "health: API :${API_PORT}$(dp_fe_on && echo " and frontend :${FRONTEND_PORT}")"; return 0; }
     sleep 2
   done
   dp_warn "health check failed (api=${api_ok} frontend=${fe_ok})"
+  if [[ $api_ok == 0 ]]; then
+    dp_warn "API: GET http://127.0.0.1:${API_PORT}${HEALTH_PATH:-/up} (Host: ${HEALTH_HOST}) → $(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: ${HEALTH_HOST}" "http://127.0.0.1:${API_PORT}${HEALTH_PATH:-/up}" || echo 'no answer')"
+    dp_warn "Laravel 11+ serves /up via health: '/up' in bootstrap/app.php; otherwise set HEALTH_PATH in ${APP_HOME}/project.env to a route that returns 200."
+  fi
   return 1
 }
 
