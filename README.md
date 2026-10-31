@@ -1,6 +1,6 @@
 # deploy-kit
 
-Interactive, re-runnable server installer and deploy tooling for a **Laravel API, with an optional Next.js frontend**. Copy one file to any fresh Linux server, answer the prompts, and get one or more environments (production, staging, dev, or your own names). Each environment gets its own domains, database, Redis DB, bucket and TLS.
+Interactive, re-runnable server installer and deploy tooling for a **Laravel API, with an optional Next.js frontend**. Copy one file to any fresh Linux server, answer the prompts, and get one or more environments (production, staging, dev, or your own names). Each environment gets its own domains, database, TLS and, when used, its own Redis DB and bucket.
 
 Every component can run **in Docker** or **natively** on the server (distro packages plus systemd), independently of the others. The database, Redis and storage can also be **external**. Nothing is tied to a domain, hosting provider or repository layout.
 
@@ -11,10 +11,12 @@ Any layout works; the wizard asks for the directories and suggests the ones it f
 ```
 your-app/
 ├── backend/   Laravel (routes /up and <API prefix>/health)
-│              docker runtime: a Dockerfile serving php-fpm on :9000 with the code in /var/www/html
+│              docker runtime: a Dockerfile serving php-fpm on :9000 with the code in /var/www/html.
+│              Containers get CACHE_CONFIG=1 (cache config on start) and RUN_MIGRATIONS=0
+│              (deploy.sh migrates); honour them in your entrypoint if you have one.
 ├── frontend/  optional Next.js app with output: "standalone"
 │              docker runtime: a Dockerfile serving :3000; every NEXT_PUBLIC_* is passed as a build arg
-└── deploy/    ← this kit (copy, git subtree, or submodule)
+└── deploy/    ← this kit (copy, git subtree, or submodule); it must live at deploy/
 ```
 
 Add the kit to your app:
@@ -31,6 +33,8 @@ scp deploy/install.sh user@server:~
 ssh -t user@server 'bash ~/install.sh'
 ```
 
+Run it as a regular user with sudo, not as root. Any arguments are passed on to `deploy/setup.sh`, so `bash ~/install.sh --answers answers.env --yes` runs unattended.
+
 The installer asks, in order:
 
 1. **Clone?** If yes, it asks for the repository URL, the target path and the branch. It can create a read-only deploy key and wait while you add it. If no, it asks for the path of an existing checkout.
@@ -40,7 +44,7 @@ The installer asks, in order:
    - API path prefix (default `/api/v1`, `none` for no prefix)
    - runtime:
      - `docker`: containers built from your Dockerfiles (it asks which Dockerfile and build context to use)
-     - `native`: PHP-FPM, Composer and Node on the host (installed when missing). Frontend install and build commands are detected from your lockfile.
+     - `native`: PHP-FPM, Composer and Node on the host (installed when missing). Frontend install and build commands are detected from your lockfile. Host nginx always serves the API here: one loopback block per env in front of PHP-FPM, even in `panel` mode.
 4. **Components.** Each one is chosen on its own:
 
    | Component | Choices |
@@ -51,7 +55,7 @@ The installer asks, in order:
    | Queue worker | `horizon`, `worker` (plain `queue:work`) or `none`. It runs as a container or a systemd unit, following the app runtime. |
    | Scheduler | on or off |
 
-   When the app runs in Docker and a service is native, that service also listens on the project's Docker network gateway, and ufw is opened for that subnet only.
+   When the app runs in Docker and a service is native, that service also listens on the project's Docker network gateway. If ufw is active, it is opened for that subnet only.
 5. **Public edge:**
    - `certbot`: nginx plus Let's Encrypt, with automatic renewal.
    - `byo`: nginx plus your own certificate.
@@ -98,7 +102,8 @@ deploy/setup.sh export-answers [file]
 4. Backs up the database before migrating (envs in `BACKUP_ENVS`, newest `BACKUP_KEEP` kept).
 5. Migrates, drains the queue worker gracefully (`horizon:terminate` / `queue:restart`), starts the release and stops components that were switched off.
 6. Health gate on the API `/up` and on the frontend, if there is one.
-   - **docker:** a failure restarts the previous release automatically (migrations are not reverted).
+   - **docker:** a failure restarts the previous release automatically (migrations are not reverted). `--rollback` restarts the previous release on demand.
+   - **native:** a failure stops the deploy; there is no automatic rollback.
 7. Checks CORS from the client origin (frontend deployments only).
 
 ## Files on the server
@@ -108,7 +113,7 @@ deploy/setup.sh export-answers [file]
 | `~/<slug>/project.env` | State, no secrets: app layout, component modes, edge, envs, domains, ports, branches, releases |
 | `~/<slug>/shared/secrets.env` | Service and DB passwords (chmod 600) |
 | `~/<slug>/<env>/.env` | Env settings (chmod 600); keys you add by hand are kept |
-| `~/<slug>/backups/<env>/` | Pre-migration dumps (`.dump` for PostgreSQL, `.sql.gz` for MySQL/MariaDB) |
+| `~/<slug>/backups/<env>/` | Pre-migration dumps (`.dump` for PostgreSQL, `.sql.gz` for MySQL/MariaDB). For an external database, the server needs `pg_dump` / `mysqldump`. |
 | `~/.<slug>.deploy` | Pointer to the app home and checkout (used by `deploy.sh` and CD) |
 
 ## CI/CD
@@ -129,7 +134,10 @@ deploy/setup.sh export-answers [file]
 - **Images and limits:** `POSTGRES_IMAGE`, `MARIADB_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `*_MEM_LIMIT` and `QUEUE_WORK_ARGS` can be set in `project.env`.
 - **nginx output:** `nginx/*.template`. **Compose stacks:** `compose/*.yml`. **systemd units:** `systemd/*.tmpl`.
 
-Requirements on the server: Linux with systemd (Debian/Ubuntu for native installs; dnf works for most packages), bash ≥ 4, sudo. Docker, nginx, certbot, PHP, Composer, Node, PostgreSQL, MariaDB, Redis and MinIO are installed when a chosen mode needs them, after asking.
+Requirements on the server: Linux with systemd, bash ≥ 4, and a user with sudo.
+- Packages are installed when a chosen mode needs them, after asking: Docker, nginx, certbot, PHP-FPM, Composer, Node 22, PostgreSQL, MariaDB, Redis and MinIO.
+- Native installs use Debian/Ubuntu package names. On other distributions, install those yourself and the wizard uses them.
+- After Docker is installed, your user is added to the `docker` group. If later Docker commands fail, log out, log back in, and re-run.
 
 Existing installs from earlier versions (`RUNTIME=host`, `SERVICES_MODE=bundled|external`) are read as the equivalent per-component settings.
 

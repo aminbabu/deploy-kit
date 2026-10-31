@@ -82,6 +82,9 @@ dp_state_load() {
   [[ -n "${PROJECT_SLUG:-}" ]] || dp_die "No project state at $(dp_state_file). Run deploy/setup.sh first."
   dp_state_compat ''
   dp_state_defaults
+  # Compose overrides set in project.env (POSTGRES_IMAGE, APP_MEM_LIMIT, …).
+  local k
+  for k in $(compgen -v | grep -E '_(IMAGE|MEM_LIMIT)$' || true); do export "$k"; done
 }
 dp_secrets_load() { dp_env_load_prefixed "$(dp_secrets_file)" ''; dp_state_compat ''; }
 
