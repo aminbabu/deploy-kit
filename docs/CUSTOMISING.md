@@ -36,7 +36,7 @@ Defaults may use `{SLUG}`, `{ENV}`, `{ROOT_DOMAIN}`, `{FRONTEND_HOST}`, `{APP_NA
 | `QUEUE_WORK_ARGS` | Options for `queue:work` (default `--sleep=3 --tries=3 --max-time=3600`) |
 | `SEED_ADMIN_CLASS` | Seeder used by `setup.sh seed-admin`, e.g. `Database\Seeders\AdminSeeder` |
 | `BACKUP_ENVS`, `BACKUP_KEEP` | Which environments are backed up before migrating, and how many backups to keep |
-| `HEALTH_PATH` | API path the deploy checks for a 200 response (default `/up`, Laravel 11+'s health route) |
+| `HEALTH_PATH` | API path the deploy checks for a 2xx response. Unset: the first of `/up`, `/api/v1/health`, `/api/health`, `/health` that answers |
 
 ## Templates
 
