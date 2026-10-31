@@ -238,7 +238,7 @@ dp_ask_app() {
   else
     local sock svc
     sock="$(ls /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -1 || true)"
-    dp_ask_required FPM_SOCK "PHP-FPM socket (installed if missing)" "${sock:-/run/php/php-fpm.sock}"
+    dp_ask_required FPM_SOCK "PHP-FPM socket path or host:port (CloudPanel pools use 127.0.0.1:<port>)" "${sock:-/run/php/php-fpm.sock}"
     svc="$(basename "${FPM_SOCK%.sock}")"; [[ "$svc" == php-fpm ]] && svc="php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)-fpm"
     dp_ask FPM_SERVICE "PHP-FPM systemd service (reloaded after deploys)" "$svc"
     if dp_fe_on; then

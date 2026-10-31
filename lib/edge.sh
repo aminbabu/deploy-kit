@@ -72,7 +72,7 @@ dp_edge_apply() {
     for env in $ENABLED_ENVS; do
       name="$(_dp_site_name "${env}-api-fpm")"
       _dp_render api-fpm.conf.template "${DP_NGINX_AVAIL}/${name}" \
-        ENV_NAME="$env" API_PORT="$(dp_ev "$env" API_PORT)" FPM_SOCK="$FPM_SOCK" \
+        ENV_NAME="$env" API_PORT="$(dp_ev "$env" API_PORT)" FPM_PASS="$([[ $FPM_SOCK == /* ]] && echo "unix:${FPM_SOCK}" || echo "$FPM_SOCK")" \
         BACKEND_PUBLIC="$(dp_env_dir "$env")/backend-run/public" MAX_BODY="${MAX_BODY:-64m}"
       _dp_enable "$name"
     done

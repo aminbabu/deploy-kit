@@ -119,11 +119,21 @@ dp_native_minio() {
 dp_native_app_prereqs() {
   local pkgs=() db_ext
   db_ext="$([[ $DB_ENGINE == mysql ]] && echo php-mysql || echo php-pgsql)"
-  if ! command -v php >/dev/null 2>&1 || ! compgen -G '/run/php/php*-fpm.sock' >/dev/null; then
-    pkgs+=(php-fpm php-cli "$db_ext" php-redis php-mbstring php-xml php-curl php-zip php-bcmath php-intl php-gd unzip)
-  elif ! php -m 2>/dev/null | grep -qi "$([[ $DB_ENGINE == mysql ]] && echo pdo_mysql || echo pdo_pgsql)"; then
-    pkgs+=("$db_ext")
+  if ! command -v php >/dev/null 2>&1; then
+    pkgs+=(php-fpm php-cli "$db_ext" php-redis php-mbstring php-xml php-curl php-zip php-bcmath php-intl php-gd)
+  else
+    # Only add what is missing: panels (CloudPanel) ship their own PHP builds whose
+    # files clash with the distro's extension packages.
+    local mods ext pkg
+    mods="$(php -m 2>/dev/null | tr 'A-Z' 'a-z')"
+    for ext in "pdo_${db_ext#php-}:${db_ext}" redis:php-redis mbstring:php-mbstring dom:php-xml curl:php-curl \
+      zip:php-zip bcmath:php-bcmath intl:php-intl gd:php-gd; do
+      pkg="${ext#*:}"; ext="${ext%%:*}"
+      grep -qx "$ext" <<<"$mods" || pkgs+=("$pkg")
+    done
+    [[ "$FPM_SOCK" == /* && ! -S "$FPM_SOCK" ]] && ! systemctl cat "${FPM_SERVICE:-php-fpm}" >/dev/null 2>&1 && pkgs+=(php-fpm)
   fi
+  command -v unzip >/dev/null 2>&1 || pkgs+=(unzip)
   (( ${#pkgs[@]} )) && dp_pkg_install "${pkgs[@]}"
   if ! command -v composer >/dev/null 2>&1; then
     dp_yes "Composer is missing. Install it to /usr/local/bin/composer?" y || dp_die "composer is required for RUNTIME=native"
