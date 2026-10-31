@@ -12,6 +12,7 @@
 #   edge                  re-render nginx / re-issue certificates / print panel upstreams
 #   services              (re)start Docker/native data services and align roles/buckets
 #   rotate-secrets        regenerate DB/Redis/MinIO passwords and apply them everywhere
+#   credentials           show the stored service passwords (DB, Redis, MinIO)
 #   harden                optional server hardening (firewall, swap, log limits, updates)
 #   deploy <env>          same as deploy/deploy.sh <env>
 #   migrate <env> | seed-admin <env> | backup <env> | restore <env> <file>
@@ -38,7 +39,7 @@ while (( $# )); do
     --skip-edge) SKIP_EDGE=1; shift ;;
     --skip-deploy) SKIP_DEPLOY=1; shift ;;
     --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
-    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     -*) dp_die "unknown option $1" ;;
     *) if [[ "$CMD" == "init" && ${#ARGS[@]} -eq 0 && "$1" =~ ^[a-z-]+$ && -z "${DP_CMD_SET:-}" ]]; then CMD="$1"; DP_CMD_SET=1; else ARGS+=("$1"); fi; shift ;;
   esac
@@ -431,6 +432,49 @@ dp_deploy_envs() {
 
 dp_reload_state() { dp_state_load; dp_secrets_load; }
 
+# One credential line: label, user, password, where to use it.
+_dp_cred() { printf '  %-22s user %-22s password %s\n' "$1" "${2:--}" "$3"; [[ -z "${4:-}" ]] || printf '  %-22s %s\n' "" "$4"; }
+
+# Print credentials. $1 = space-separated secret names to show (default: all stored).
+dp_print_credentials() {
+  local only=" ${1:-} " env up k
+  _want() { [[ "$only" == "  " || "$only" == *" $1 "* ]] && [[ -n "${!1:-}" ]]; }
+  for env in $ENABLED_ENVS; do
+    up="$(dp_env_upper "$env")"; k="DB_PASSWORD_${up}"
+    _want "$k" || continue
+    if [[ "$DB_MODE" == external ]]; then
+      _dp_cred "${env} database" "$(dp_ev "$env" DB_USERNAME)" "${!k}" "database $(dp_ev "$env" DB_DATABASE) on $(dp_ev "$env" DB_HOST):$(dp_ev "$env" DB_PORT)"
+    else
+      _dp_cred "${env} database" "$(dp_db_name "$env")" "${!k}" "database $(dp_db_name "$env") on 127.0.0.1:${DB_LOCAL_PORT} (${DB_ENGINE}, ${DB_MODE})"
+    fi
+  done
+  _want DB_ROOT_PASSWORD && [[ "$DB_MODE" == docker ]] && _dp_cred "Database admin" "$DB_ROOT_USER" "$DB_ROOT_PASSWORD" "127.0.0.1:${DB_LOCAL_PORT} — superuser, for maintenance only"
+  _want REDIS_PASSWORD && [[ "$REDIS_MODE" != none ]] && _dp_cred "Redis" "" "$REDIS_PASSWORD" "${REDIS_HOST:-127.0.0.1}:${REDIS_PORT}"
+  _want MINIO_ROOT_PASSWORD && dp_minio_on && _dp_cred "MinIO" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" \
+    "console http://127.0.0.1:${MINIO_CONSOLE_PORT} (from your computer: ssh -L ${MINIO_CONSOLE_PORT}:127.0.0.1:${MINIO_CONSOLE_PORT} <server>)"
+  return 0
+}
+
+# After apply: show the passwords generated in this run, once, with a notice.
+dp_show_generated() {
+  [[ -n "${DP_GENERATED// }" ]] || return 0
+  dp_section "Generated credentials — save them now"
+  printf '%s  These passwords were generated for you and are shown only this once.%s\n' "$DP_C_YEL" "$DP_C_OFF"
+  printf '%s  Copy them to your password manager.%s\n\n' "$DP_C_YEL" "$DP_C_OFF"
+  dp_print_credentials "$DP_GENERATED"
+  echo
+  echo "  Stored on this server in $(dp_secrets_file) (chmod 600)."
+  echo "  Show them again later: deploy/setup.sh credentials"
+}
+
+cmd_credentials() {
+  dp_load_existing; dp_reload_state
+  dp_yes "Print the stored service passwords on screen?" y || exit 0
+  dp_section "Credentials for ${PROJECT_SLUG}"
+  dp_print_credentials
+  echo; echo "  Source: $(dp_secrets_file)"
+}
+
 # Toolchains + Docker for the chosen modes.
 dp_prepare_host() {
   dp_needs_docker && dp_install_docker
@@ -469,6 +513,7 @@ cmd_init() {
     dp_multiselect DEPLOY_NOW "Build and deploy now (one after another)" "$ENABLED_ENVS" $ENABLED_ENVS
     dp_deploy_envs $DEPLOY_NOW
   fi
+  dp_show_generated
   dp_section "Done"
   echo "  Deploy later:   deploy/deploy.sh <env> [--pull]"
   echo "  Add an env:     deploy/setup.sh add-env staging"
@@ -490,6 +535,7 @@ cmd_add_env() {
   [[ "$SKIP_SERVICES" == "1" ]] || dp_services_apply
   [[ "$SKIP_EDGE" == "1" ]] || dp_edge_apply
   [[ "$SKIP_DEPLOY" == "1" ]] || { dp_yes "Deploy ${env} now?" y DP_DEPLOY && dp_deploy_envs "$env"; } || true
+  dp_show_generated
   dp_info "Remember: add the ${env} branch to .github/workflows/cd.yml if CI should deploy it."
 }
 
@@ -569,6 +615,7 @@ cmd_components() {
   if [[ "$old" == *"runtime:"* && "$old" != *"runtime:${RUNTIME}" ]]; then
     for env in $ENABLED_ENVS; do dp_stop_env_app "$env"; done
   fi
+  dp_show_generated
   dp_info "Review mail/SMS/payment/storage variables with: setup.sh vars <env>"
   [[ "$SKIP_DEPLOY" == "1" ]] || { dp_yes "Redeploy all envs now to apply?" y DP_DEPLOY && dp_deploy_envs $ENABLED_ENVS; } || true
 }
@@ -594,6 +641,12 @@ cmd_rotate_secrets() {
   unset DP_DB_ROOT_OLD
   for env in $ENABLED_ENVS; do dp_write_managed "$env" >/dev/null; done
   dp_deploy_envs $ENABLED_ENVS
+  DP_GENERATED="REDIS_PASSWORD MINIO_ROOT_PASSWORD"
+  if [[ "$DB_MODE" != external ]]; then
+    DP_GENERATED+=" DB_ROOT_PASSWORD"
+    for env in $ENABLED_ENVS; do DP_GENERATED+=" DB_PASSWORD_$(dp_env_upper "$env")"; done
+  fi
+  dp_show_generated
 }
 
 cmd_status() {
@@ -681,6 +734,7 @@ case "$CMD" in
   edge) dp_load_existing; dp_reload_state; dp_edge_apply ;;
   services) dp_load_existing; dp_reload_state; dp_prepare_host; dp_services_apply ;;
   rotate-secrets) cmd_rotate_secrets ;;
+  credentials) cmd_credentials ;;
   harden) dp_load_existing; dp_reload_state; dp_harden ;;
   deploy) exec "${DP_ROOT}/deploy.sh" "${ARGS[@]}" ;;
   migrate) dp_load_existing; dp_reload_state; dp_artisan "${ARGS[0]:?env}" migrate --force ;;

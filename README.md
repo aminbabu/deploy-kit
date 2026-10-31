@@ -30,7 +30,9 @@ It asks for your app's Git URL, clones it, and starts the setup.
 
 ### Step 3 — Answer the questions
 
-Every question has a sensible default in `[brackets]`; **press Enter to accept it**. Passwords are generated for you. At the end you see a summary, type `y`, and your app is live at `https://your-domain`.
+Every question has a sensible default in `[brackets]`; **press Enter to accept it**. At the end you see a summary, type `y`, and your app is live at `https://your-domain`.
+
+Passwords you leave empty are generated for you. **They're printed once at the end under "Generated credentials — save them now"**, so copy them to your password manager. To see them again later, run `deploy/setup.sh credentials`.
 
 **To deploy new code later:**
 
@@ -106,6 +108,7 @@ Run these on the server, in your app's folder.
 | Add or remove an environment | `deploy/setup.sh add-env staging` / `remove-env staging` |
 | Back up / restore the database | `deploy/setup.sh backup production` / `restore production <file>` |
 | Run migrations | `deploy/setup.sh migrate production` |
+| Show database / Redis / MinIO passwords | `deploy/setup.sh credentials` |
 | Change all generated passwords | `deploy/setup.sh rotate-secrets` |
 | Firewall, swap, auto security updates | `deploy/setup.sh harden` |
 

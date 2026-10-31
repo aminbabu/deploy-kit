@@ -77,7 +77,8 @@ dp_ask_secret() {
   fi
   if [[ -z "$val" && "$gen" == "1" ]]; then
     val="$(dp_gen_secret)"
-    echo "  → generated ${var}"
+    echo "  → generated ${var} (shown once after apply)"
+    DP_GENERATED+=" ${var}"
   fi
   printf -v "$var" '%s' "$val"
 }
