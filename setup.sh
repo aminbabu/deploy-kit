@@ -172,7 +172,9 @@ dp_load_existing() {
 dp_ask_project() {
   dp_section "Project"
   local slug_def remote
-  slug_def="$(basename "$REPO_ROOT" | tr '[:upper:]_' '[:lower:]-' | sed 's/[^a-z0-9-]//g')"
+  # install.sh clones into ~/<app>/repo: name the project after <app>, not "repo".
+  slug_def="$(basename "$REPO_ROOT")"; [[ "$slug_def" == repo ]] && slug_def="$(basename "$(dirname "$REPO_ROOT")")"
+  slug_def="$(printf '%s' "$slug_def" | tr '[:upper:]_' '[:lower:]-' | sed 's/[^a-z0-9-]//g')"
   dp_ask PROJECT_SLUG "Project slug (prefixes DBs, buckets, containers, units)" "$slug_def" dp_v_slug
   dp_ask APP_HOME "App home (state, env files, backups)" "${HOME}/${PROJECT_SLUG}" dp_v_path
   APP_HOME="$(dp_expand_path "$APP_HOME")"
