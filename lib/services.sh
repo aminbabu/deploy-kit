@@ -154,7 +154,10 @@ dp_backup_db() {
   fi
   chmod 600 "$out"
   # shellcheck disable=SC2012
-  ls -1t "$dir"/*.dump "$dir"/*.sql.gz 2>/dev/null | tail -n +"$((keep + 1))" | xargs -r rm -f
+  # Only existing globs: ls on a missing pattern fails, which aborts under pipefail.
+  local old=(); compgen -G "${dir}/*.dump" >/dev/null && old+=("$dir"/*.dump)
+  compgen -G "${dir}/*.sql.gz" >/dev/null && old+=("$dir"/*.sql.gz)
+  ls -1t "${old[@]}" | tail -n +"$((keep + 1))" | xargs -r rm -f
 }
 
 dp_restore_db() {
