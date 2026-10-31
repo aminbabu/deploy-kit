@@ -62,6 +62,8 @@ your-app/
 
 ## 2. Add the kit to your app
 
+**Do this once per app, on your own computer.** It copies this kit into your app as a `deploy/` folder. The server gets the kit later by cloning your app, so the folder has to be committed and pushed.
+
 Run this inside your app repository:
 
 ```bash
@@ -74,20 +76,22 @@ To get kit updates later:
 git subtree pull --prefix deploy git@github.com:aminbabu/deploy-kit.git main --squash
 ```
 
-Commit and push. The kit now ships with your app.
+Push your app. Every clone of it now includes `deploy/`.
 
 ---
 
 ## 3. Set up a server
 
-Copy the installer to the server and run it:
+**Do this once per server.** Copy the installer from your app's `deploy/` folder to the server and run it:
 
 ```bash
 scp deploy/install.sh user@your-server:~
 ssh -t user@your-server 'bash ~/install.sh'
 ```
 
-It clones your repository (it can create a read-only deploy key for you), then starts the setup questions. When it finishes, your app is live.
+It asks for your **app's** Git URL and clones it. The kit comes along in `deploy/` from step 2, so deploy-kit itself isn't downloaded separately. It can create a read-only deploy key for you. Then it starts the setup questions, and when it finishes your app is live.
+
+If your app is already on the server, answer **no** to "Clone?" and give its folder instead.
 
 **Unattended setup:** put your answers in a file and add `--yes`:
 
