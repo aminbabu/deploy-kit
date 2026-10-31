@@ -20,12 +20,13 @@ Your app now has a `deploy/` folder. That's the only change to your app.
 
 ### Step 2 — Run the installer *(once, on the server)*
 
+Log into your server and paste:
+
 ```bash
-scp deploy/install.sh user@your-server:~
-ssh -t user@your-server 'bash ~/install.sh'
+bash <(curl -fsSL https://raw.githubusercontent.com/aminbabu/deploy-kit/main/install.sh)
 ```
 
-It clones your app onto the server and starts the setup.
+It asks for your app's Git URL, clones it, and starts the setup.
 
 ### Step 3 — Answer the questions
 

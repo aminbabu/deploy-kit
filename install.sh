@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Standalone bootstrap — copy this one file to a fresh server and run it:
-#   scp deploy/install.sh user@server:~ && ssh -t user@server 'bash ~/install.sh'
-#   (or) bash <(curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/deploy/install.sh)
+# Standalone bootstrap — run on a fresh server:
+#   bash <(curl -fsSL https://raw.githubusercontent.com/aminbabu/deploy-kit/main/install.sh)
+#   (or, from a checkout) bash deploy/install.sh
 #
 # It optionally clones the repository (asking URL, target path, branch, and can create
 # a read-only deploy key), then runs <repo>/deploy/setup.sh with the same arguments.
