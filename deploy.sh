@@ -9,6 +9,8 @@
 # Reads <APP_HOME>/project.env (written by deploy/setup.sh). Serialized by a lock;
 # every run is appended to <APP_HOME>/shared/deploy.log.
 set -euo pipefail
+# corepack's pnpm/yarn shims live here (CI shells don't read ~/.bashrc).
+export PATH="${HOME}/.local/bin:${PATH}"
 
 DP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${DP_ROOT}/.." && pwd)"
@@ -182,18 +184,48 @@ deploy_docker() {
 }
 
 # --- native runtime -----------------------------------------------------------
-DP_UNITS=()
+DP_UNITS=() DP_UNITS_CHANGED=0
 # Write (or remove when off) one systemd unit for this env: <kind> <y|n> <template> sed-args...
+# Unchanged units are not rewritten, so routine deploys (CI) only need
+# passwordless "systemctl restart <slug>-*" and the FPM reload — see dp_sudoers_hint.
 _dp_unit() {
-  local kind="$1" on="$2" tpl="$3" unit="${PROJECT_SLUG}-${1}-${ENV_NAME}.service"; shift 3
+  local kind="$1" on="$2" tpl="$3" unit="${PROJECT_SLUG}-${1}-${ENV_NAME}.service" dest want; shift 3
+  dest="/etc/systemd/system/${unit}"
   if [[ "$on" != y ]]; then
-    sudo systemctl disable --now "$unit" 2>/dev/null || true
-    sudo rm -f "/etc/systemd/system/${unit}"
+    [[ -e "$dest" ]] || return 0
+    _dp_sudo_unit systemctl disable --now "$unit" 2>/dev/null || true
+    _dp_sudo_unit rm -f "$dest"; DP_UNITS_CHANGED=1
     return 0
   fi
-  sed -e "s|__SLUG__|${PROJECT_SLUG}|g" -e "s|__ENV__|${ENV_NAME}|g" -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" "$@" \
-    "${DP_ROOT}/systemd/${tpl}" | sudo tee "/etc/systemd/system/${unit}" >/dev/null
+  want="$(sed -e "s|__SLUG__|${PROJECT_SLUG}|g" -e "s|__ENV__|${ENV_NAME}|g" -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" "$@" \
+    "${DP_ROOT}/systemd/${tpl}")"
+  if [[ "$(cat "$dest" 2>/dev/null)" != "$want" ]]; then
+    printf '%s\n' "$want" | _dp_sudo_unit tee "$dest" >/dev/null
+    DP_UNITS_CHANGED=1
+  fi
   DP_UNITS+=("$unit")
+}
+
+# sudo for unit-file changes: without a terminal (CI) fail fast with a clear message
+# instead of a password prompt nobody can answer.
+_dp_sudo_unit() {
+  if [[ -t 2 ]]; then sudo "$@"; return; fi
+  sudo -n "$@" 2>/dev/null || dp_die "systemd unit files changed and need sudo. Run this deploy once by hand on the server: deploy/deploy.sh ${ENV_NAME}"
+}
+
+# Restart/reload: without a terminal, explain the sudoers line instead of hanging.
+_dp_sudo_restart() {
+  if [[ -t 2 ]]; then sudo "$@"; return; fi
+  sudo -n "$@" 2>/dev/null && return 0
+  dp_warn "Passwordless sudo is needed for CI deploys. On the server run: sudo visudo -f /etc/sudoers.d/${PROJECT_SLUG}-deploy"
+  dp_warn "and add this line:"; dp_sudoers_hint >&2
+  dp_die "could not run: sudo $*"
+}
+
+# One-time sudoers line that lets CI deploys restart services without a password.
+dp_sudoers_hint() {
+  local u; u="$(id -un)"
+  echo "  ${u} ALL=(root) NOPASSWD: /usr/bin/systemctl restart ${PROJECT_SLUG}-*${FPM_SERVICE:+, /usr/bin/systemctl reload ${FPM_SERVICE}}"
 }
 
 deploy_native() {
@@ -217,7 +249,9 @@ deploy_native() {
     local pub=() kv
     while IFS= read -r kv; do pub+=("$kv"); done < <(dp_public_env)
     if [[ "$FRONTEND_INSTALL_CMD$FRONTEND_BUILD_CMD" =~ (pnpm|yarn) ]] && ! command -v "${BASH_REMATCH[1]}" >/dev/null 2>&1; then
-      corepack enable 2>/dev/null || sudo corepack enable
+      # Into a user-owned dir: a global Node (nvm under /opt, distro /usr) is not writable.
+      mkdir -p "${HOME}/.local/bin"
+      corepack enable --install-directory "${HOME}/.local/bin" "${BASH_REMATCH[1]}"
     fi
     dp_info "Frontend install + build (${FRONTEND_DIR})"
     (cd "$REPO_ROOT" && bash -c "$FRONTEND_INSTALL_CMD" >/dev/null \
@@ -237,16 +271,23 @@ deploy_native() {
     -e "s|__DESC__|queue worker (${QUEUE_WORKER})|g" -e "s|__CMD__|${worker_cmd}|g" -e "s|__PHP__|${php_bin}|g" -e "s|__RUN__|${BACKEND_RUN}|g"
   _dp_unit scheduler "$SCHEDULER_ENABLED" artisan.service.tmpl \
     -e "s|__DESC__|scheduler|g" -e "s|__CMD__|schedule:work|g" -e "s|__PHP__|${php_bin}|g" -e "s|__RUN__|${BACKEND_RUN}|g"
-  sudo systemctl daemon-reload
+  if (( DP_UNITS_CHANGED )); then
+    _dp_sudo_unit systemctl daemon-reload
+    (( ${#DP_UNITS[@]} )) && { _dp_sudo_unit systemctl enable "${DP_UNITS[@]}" >/dev/null 2>&1; }
+  fi
   if (( ${#DP_UNITS[@]} )); then
     [[ "$QUEUE_WORKER" == horizon ]] && { (cd "$BACKEND_RUN" && "$php_bin" artisan horizon:terminate >/dev/null 2>&1) || true; }
-    sudo systemctl enable "${DP_UNITS[@]}" >/dev/null 2>&1
-    sudo systemctl restart "${DP_UNITS[@]}"
+    _dp_sudo_restart systemctl restart "${DP_UNITS[@]}"
   fi
-  [[ -n "${FPM_SERVICE:-}" ]] && sudo systemctl reload "$FPM_SERVICE"
+  [[ -n "${FPM_SERVICE:-}" ]] && _dp_sudo_restart systemctl reload "$FPM_SERVICE"
 
   dp_health || dp_die "Release ${SHA} failed its health check."
   dp_state_set "${UP}_DEPLOYED_SHA" "$SHA"
+  # Manual deploy: tell once if CI deploys would still hit a sudo password prompt.
+  if [[ -t 2 ]] && (( ${#DP_UNITS[@]} )) && ! sudo -n -l /usr/bin/systemctl restart "${DP_UNITS[0]}" >/dev/null 2>&1; then
+    dp_info "For CI deploys, allow service restarts without a password (once): sudo visudo -f /etc/sudoers.d/${PROJECT_SLUG}-deploy"
+    dp_sudoers_hint
+  fi
 }
 
 if [[ "$RUNTIME" == "docker" ]]; then deploy_docker; else deploy_native; fi
