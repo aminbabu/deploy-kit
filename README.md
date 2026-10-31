@@ -126,6 +126,9 @@ Running `deploy/setup.sh` again is always safe: it remembers your answers, so pr
 
 Each push to `main` now deploys production. Your app's passwords stay on the server.
 
+**Native runtime:** run the first deploy by hand. It asks for your sudo password once to let your user's services start at boot (`loginctl enable-linger`). After that, CI deploys need no sudo: the frontend, queue worker and scheduler run as your user's systemd services. Check them with `systemctl --user status '<project>-*'` and their logs with `journalctl --user -u <project>-worker-production`. To also reload PHP-FPM from CI (clears OPcache immediately), add with `sudo visudo -f /etc/sudoers.d/<project>`:
+`<user> ALL=(root) NOPASSWD: /usr/bin/systemctl reload php8.4-fpm` (your PHP version).
+
 ---
 
 ## What a deploy does

@@ -144,6 +144,30 @@ dp_php_bin() {
   local v; v="$(dp_php_ver)"
   if [[ -n "$v" ]] && command -v "php${v}" >/dev/null 2>&1; then command -v "php${v}"; else command -v php; fi
 }
+# Native app processes run as systemd *user* services of the deploy user: no sudo per
+# deploy (CI included); "loginctl enable-linger" (once) starts them at boot.
+dp_user_unit_dir() { echo "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"; }
+dp_userctl() {
+  # Non-login SSH sessions (CI) may lack these; the user manager lives at /run/user/<uid>.
+  XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+    DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}" systemctl --user "$@"
+}
+# Keep the user manager (and its services) running without a login session.
+dp_ensure_linger() {
+  [[ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" == yes ]] && return 0
+  dp_info "Enabling lingering for $(id -un) so its services start at boot (one-time sudo)"
+  sudo loginctl enable-linger "$(id -un)"
+  local i; for i in $(seq 1 10); do [[ -S "/run/user/$(id -u)/bus" ]] && return 0; sleep 1; done
+}
+# Older kit versions installed these as system units; remove them once.
+dp_drop_system_unit() {
+  local unit="$1"
+  [[ -e "/etc/systemd/system/${unit}" ]] || return 0
+  dp_info "Moving ${unit} from a system unit to a user unit (one-time sudo)"
+  sudo systemctl disable --now "$unit" 2>/dev/null || true
+  sudo rm -f "/etc/systemd/system/${unit}"
+  sudo systemctl daemon-reload
+}
 dp_svc_port() { [[ "$1" == docker && "$RUNTIME" == docker ]] && echo "$2" || echo "$3"; }
 
 # Address native MinIO listens on (one address only): the bridge gateway when

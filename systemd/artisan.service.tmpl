@@ -1,12 +1,8 @@
 [Unit]
 Description=__SLUG__ __DESC__ (__ENV__)
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
-User=__USER__
-Group=__GROUP__
 WorkingDirectory=__RUN__
 ExecStart=__PHP__ artisan __CMD__
 Restart=always
@@ -18,4 +14,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

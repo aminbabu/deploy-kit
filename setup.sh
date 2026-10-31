@@ -555,10 +555,11 @@ dp_stop_env_app() {
     docker compose -p "${PROJECT_SLUG}-${env}-horizon" down 2>/dev/null || true   # older native layout
   fi
   for kind in frontend worker scheduler; do
-    sudo systemctl disable --now "${PROJECT_SLUG}-${kind}-${env}.service" 2>/dev/null || true
-    sudo rm -f "/etc/systemd/system/${PROJECT_SLUG}-${kind}-${env}.service"
+    dp_userctl disable --now "${PROJECT_SLUG}-${kind}-${env}.service" 2>/dev/null || true
+    rm -f "$(dp_user_unit_dir)/${PROJECT_SLUG}-${kind}-${env}.service"
+    dp_drop_system_unit "${PROJECT_SLUG}-${kind}-${env}.service"
   done
-  sudo systemctl daemon-reload 2>/dev/null || true
+  dp_userctl daemon-reload 2>/dev/null || true
 }
 
 cmd_remove_env() {
@@ -672,7 +673,7 @@ cmd_status() {
     if [[ "$RUNTIME" == "docker" ]]; then docker compose -p "${PROJECT_SLUG}-${env}" ps --format '    {{.Service}}: {{.State}} {{.Health}}' 2>/dev/null || true
     else
       for u in frontend worker scheduler; do
-        systemctl cat "${PROJECT_SLUG}-${u}-${env}" >/dev/null 2>&1 && printf '    %s: %s\n' "$u" "$(systemctl is-active "${PROJECT_SLUG}-${u}-${env}" 2>/dev/null)"
+        dp_userctl cat "${PROJECT_SLUG}-${u}-${env}" >/dev/null 2>&1 && printf '    %s: %s\n' "$u" "$(dp_userctl is-active "${PROJECT_SLUG}-${u}-${env}" 2>/dev/null)"
       done
     fi
     printf '    backups: %s\n' "$(ls "${APP_HOME}/backups/${env}" 2>/dev/null | wc -l | xargs)"
