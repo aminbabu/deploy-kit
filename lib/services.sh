@@ -147,7 +147,7 @@ dp_backup_db() {
     case "$DB_MODE" in
       docker) dp_services_compose exec -T -e MYSQL_PWD="$DB_ROOT_PASSWORD" mariadb mariadb-dump -uroot --single-transaction --routines "$name" | gzip >"$out" ;;
       native) sudo "$(command -v mariadb-dump || echo mysqldump)" --single-transaction --routines "$name" | gzip >"$out" ;;
-      external) MYSQL_PWD="$(dp_env_value "$f" DB_PASSWORD)" "$(command -v mariadb-dump || echo mysqldump)" --single-transaction \
+      external) MYSQL_PWD="$(dp_env_value "$f" DB_PASSWORD)" "$(command -v mariadb-dump || echo mysqldump)" --single-transaction --no-tablespaces \
           -h "$(dp_env_value "$f" DB_HOST)" -P "$(dp_env_value "$f" DB_PORT)" -u "$(dp_env_value "$f" DB_USERNAME)" \
           "$(dp_env_value "$f" DB_DATABASE)" | gzip >"$out" ;;
     esac

@@ -199,11 +199,11 @@ _dp_unit() {
 deploy_native() {
   [[ "$ROLLBACK" == "0" ]] || dp_die "--rollback is only available for the docker runtime."
   local php_bin node_bin=""
-  php_bin="$(command -v php)" || dp_die "php not found (run: deploy/setup.sh services)"
+  php_bin="$(dp_php_bin)" || dp_die "php not found (run: deploy/setup.sh services)"
   command -v composer >/dev/null 2>&1 || dp_die "composer not found"
 
   dp_info "Backend dependencies (${BACKEND_DIR})"
-  (cd "$BACKEND_SRC" && composer install --no-dev --optimize-autoloader --no-interaction --quiet)
+  (cd "$BACKEND_SRC" && "$php_bin" "$(command -v composer)" install --no-dev --optimize-autoloader --no-interaction --quiet)
   dp_publish_backend "$ENV_DIR" "$BACKEND_SRC" "$ENV_FILE"
 
   dp_maybe_backup

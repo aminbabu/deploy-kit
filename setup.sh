@@ -239,7 +239,16 @@ dp_ask_app() {
     local sock svc
     sock="$(ls /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -1 || true)"
     dp_ask_required FPM_SOCK "PHP-FPM socket path or host:port (CloudPanel pools use 127.0.0.1:<port>)" "${sock:-/run/php/php-fpm.sock}"
-    svc="$(basename "${FPM_SOCK%.sock}")"; [[ "$svc" == php-fpm ]] && svc="php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)-fpm"
+    svc=""
+    if [[ "$FPM_SOCK" == /* ]]; then
+      svc="$(basename "${FPM_SOCK%.sock}")"; [[ "$svc" =~ ^php[0-9]+\.[0-9]+-fpm$ ]] || svc=""
+    fi
+    # Pool on a TCP port or custom socket name: find the pool file that listens there.
+    if [[ -z "$svc" ]]; then
+      local pool; pool="$(sudo grep -lsE "^[[:space:]]*listen[[:space:]]*=[[:space:]]*${FPM_SOCK//./\\.}[[:space:]]*$" /etc/php/*/fpm/pool.d/*.conf | head -1 || true)"
+      [[ "$pool" =~ ^/etc/php/([0-9]+\.[0-9]+)/ ]] && svc="php${BASH_REMATCH[1]}-fpm"
+    fi
+    [[ -n "$svc" ]] || svc="php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)-fpm"
     dp_ask FPM_SERVICE "PHP-FPM systemd service (reloaded after deploys)" "$svc"
     if dp_fe_on; then
       _dp_fe_cmds
@@ -457,7 +466,7 @@ dp_print_credentials() {
 
 # After apply: show the passwords generated in this run, once, with a notice.
 dp_show_generated() {
-  [[ -n "${DP_GENERATED// }" ]] || return 0
+  [[ -n "${DP_GENERATED:-}" && -n "${DP_GENERATED// }" ]] || return 0
   dp_section "Generated credentials — save them now"
   printf '%s  These passwords were generated for you and are shown only this once.%s\n' "$DP_C_YEL" "$DP_C_OFF"
   printf '%s  Copy them to your password manager.%s\n\n' "$DP_C_YEL" "$DP_C_OFF"

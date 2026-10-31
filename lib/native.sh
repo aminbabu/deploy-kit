@@ -71,7 +71,7 @@ dp_native_mariadb() {
 dp_native_redis() {
   command -v redis-server >/dev/null 2>&1 || dp_pkg_install redis-server
   local conf=/etc/redis/redis.conf svc=redis-server before bind="127.0.0.1 -::1" pw
-  [[ -f "$conf" ]] || conf=/etc/redis.conf
+  sudo test -f "$conf" || conf=/etc/redis.conf
   systemctl cat redis-server >/dev/null 2>&1 || svc=redis
   before="$(sudo md5sum "$conf")"
   # "-" = optional address (Redis 7): the gateway may not exist yet at boot.
@@ -117,21 +117,24 @@ dp_native_minio() {
 
 # PHP-FPM + Composer (+ Node when a frontend is deployed) for RUNTIME=native.
 dp_native_app_prereqs() {
-  local pkgs=() db_ext
-  db_ext="$([[ $DB_ENGINE == mysql ]] && echo php-mysql || echo php-pgsql)"
-  if ! command -v php >/dev/null 2>&1; then
-    pkgs+=(php-fpm php-cli "$db_ext" php-redis php-mbstring php-xml php-curl php-zip php-bcmath php-intl php-gd)
+  local pkgs=() db_ext php_bin p
+  # Versioned names (php8.4-redis) when the pool pins a version, else the distro default.
+  p="php$(dp_php_ver)-"
+  db_ext="${p}$([[ $DB_ENGINE == mysql ]] && echo mysql || echo pgsql)"
+  php_bin="$(dp_php_bin || true)"
+  if [[ -z "$php_bin" ]]; then
+    pkgs+=("${p}fpm" "${p}cli" "$db_ext" "${p}redis" "${p}mbstring" "${p}xml" "${p}curl" "${p}zip" "${p}bcmath" "${p}intl" "${p}gd")
   else
     # Only add what is missing: panels (CloudPanel) ship their own PHP builds whose
     # files clash with the distro's extension packages.
     local mods ext pkg
-    mods="$(php -m 2>/dev/null | tr 'A-Z' 'a-z')"
-    for ext in "pdo_${db_ext#php-}:${db_ext}" redis:php-redis mbstring:php-mbstring dom:php-xml curl:php-curl \
-      zip:php-zip bcmath:php-bcmath intl:php-intl gd:php-gd; do
-      pkg="${ext#*:}"; ext="${ext%%:*}"
+    mods="$("$php_bin" -m 2>/dev/null | tr 'A-Z' 'a-z')"
+    for ext in "pdo_${db_ext##*-}:${db_ext}" redis:redis mbstring:mbstring dom:xml curl:curl \
+      zip:zip bcmath:bcmath intl:intl gd:gd; do
+      pkg="${ext#*:}"; ext="${ext%%:*}"; [[ "$pkg" == "$db_ext" ]] || pkg="${p}${pkg}"
       grep -qx "$ext" <<<"$mods" || pkgs+=("$pkg")
     done
-    [[ "$FPM_SOCK" == /* && ! -S "$FPM_SOCK" ]] && ! systemctl cat "${FPM_SERVICE:-php-fpm}" >/dev/null 2>&1 && pkgs+=(php-fpm)
+    [[ "$FPM_SOCK" == /* && ! -S "$FPM_SOCK" ]] && ! systemctl cat "${FPM_SERVICE:-php-fpm}" >/dev/null 2>&1 && pkgs+=("${p}fpm")
   fi
   command -v unzip >/dev/null 2>&1 || pkgs+=(unzip)
   (( ${#pkgs[@]} )) && dp_pkg_install "${pkgs[@]}"

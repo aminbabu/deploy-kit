@@ -137,6 +137,13 @@ dp_svc_host() {
     *) echo "${3:-}" ;;
   esac
 }
+# PHP version of the FPM pool (from FPM_SERVICE, e.g. php8.4-fpm → 8.4); empty = default php.
+dp_php_ver() { [[ "${FPM_SERVICE:-}" =~ ^php([0-9]+\.[0-9]+)-fpm$ ]] && echo "${BASH_REMATCH[1]}" || true; }
+# CLI binary matching that pool, so artisan/composer/workers run the same PHP as the site.
+dp_php_bin() {
+  local v; v="$(dp_php_ver)"
+  if [[ -n "$v" ]] && command -v "php${v}" >/dev/null 2>&1; then command -v "php${v}"; else command -v php; fi
+}
 dp_svc_port() { [[ "$1" == docker && "$RUNTIME" == docker ]] && echo "$2" || echo "$3"; }
 
 # Address native MinIO listens on (one address only): the bridge gateway when

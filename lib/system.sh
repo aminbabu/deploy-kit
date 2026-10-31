@@ -88,14 +88,14 @@ dp_dns_check() {
 
 dp_harden() {
   dp_section "Server hardening (each step optional)"
-  if command -v ufw >/dev/null 2>&1 || dp_yes "Install ufw firewall?" n DP_HARDEN_UFW_INSTALL; then
+  if [[ "$EDGE_MODE" == "panel" ]]; then
+    dp_info "Firewall skipped: the panel serves the public ports; use the panel's own firewall."
+  elif command -v ufw >/dev/null 2>&1 || dp_yes "Install ufw firewall?" n DP_HARDEN_UFW_INSTALL; then
     command -v ufw >/dev/null 2>&1 || dp_pkg_install ufw
     if dp_yes "Firewall: allow only SSH + HTTP/HTTPS (${PUBLIC_HTTP_PORT:-80}/${PUBLIC_HTTPS_PORT:-443})?" y DP_HARDEN_UFW; then
       sudo ufw allow OpenSSH >/dev/null
-      if [[ "$EDGE_MODE" != "panel" ]]; then
-        sudo ufw allow "${PUBLIC_HTTP_PORT:-80}/tcp" >/dev/null
-        sudo ufw allow "${PUBLIC_HTTPS_PORT:-443}/tcp" >/dev/null
-      fi
+      sudo ufw allow "${PUBLIC_HTTP_PORT:-80}/tcp" >/dev/null
+      sudo ufw allow "${PUBLIC_HTTPS_PORT:-443}/tcp" >/dev/null
       sudo ufw --force enable >/dev/null && dp_ok "ufw enabled"
       # Containers reaching natively installed services come in through the bridge.
       if [[ "$DB_MODE" == native || "$REDIS_MODE" == native || "$(dp_minio_mode)" == native ]]; then dp_allow_bridge; fi
