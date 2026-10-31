@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host runtime: per-env runtime copies so envs sharing one checkout never share
+# Native runtime: per-env runtime copies so envs sharing one checkout never share
 # Laravel's cached config or a Next.js build.
 #   <env>/backend-run   Laravel copy (.env → <env>/.env, storage → <env>/storage)
 #   <env>/frontend-run  Next.js standalone output for this env's NEXT_PUBLIC_* values
@@ -43,14 +43,22 @@ dp_verify_backend_config() {
 }
 
 # Copy a finished `next build` (output: standalone) into <env>/frontend-run.
+# Sets FRONTEND_RUN and FRONTEND_ENTRY (server.js to start).
 dp_publish_frontend() {
-  local env_dir="$1" repo="$2" run="${1}/frontend-run"
-  [[ -d "${repo}/frontend/.next/standalone" ]] || dp_die "No standalone build at ${repo}/frontend/.next/standalone"
+  local env_dir="$1" src="$2" run="${1}/frontend-run" sa="${2}/.next/standalone" rel="" app
+  [[ -d "$sa" ]] || dp_die "No standalone build at ${sa} — set output: 'standalone' in next.config"
+  # Single apps put server.js at the root; monorepos nest it (standalone/<app dir>/server.js).
+  if [[ ! -f "${sa}/server.js" ]]; then
+    rel="$(cd "$sa" && find . -name server.js -not -path '*/node_modules/*' -print -quit)"
+    [[ -n "$rel" ]] || dp_die "server.js not found under ${sa}"
+    rel="${rel#./}"; rel="${rel%server.js}"; rel="${rel%/}"
+  fi
   dp_info "Publishing frontend → ${run}"
   mkdir -p "$run"
-  rsync -a --delete "${repo}/frontend/.next/standalone/" "${run}/"
-  mkdir -p "${run}/frontend/.next"
-  rsync -a --delete "${repo}/frontend/.next/static/" "${run}/frontend/.next/static/"
-  [[ -d "${repo}/frontend/public" ]] && rsync -a --delete "${repo}/frontend/public/" "${run}/frontend/public/"
-  FRONTEND_RUN="$run"
+  rsync -a --delete "${sa}/" "${run}/"
+  app="${run}${rel:+/${rel}}"
+  mkdir -p "${app}/.next"
+  rsync -a --delete "${src}/.next/static/" "${app}/.next/static/"
+  [[ -d "${src}/public" ]] && rsync -a --delete "${src}/public/" "${app}/public/"
+  FRONTEND_RUN="$run" FRONTEND_ENTRY="${app}/server.js"
 }

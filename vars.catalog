@@ -1,12 +1,16 @@
-# Environment variable catalog for deploy/setup.sh.
+# Environment variable catalog for deploy/setup.sh (generic Laravel + optional Next.js).
+# Project-specific keys go in vars.extra.catalog (same format, read after this file).
 #
-# KEY|kind|group|default|help
+# KEY|kind|group|default|help|options
 #   kind: managed  – written by the scripts (URLs, DB, Redis, storage, build); never asked
 #         gen      – per-env secret generated once (Enter keeps it)
 #         required – asked for every env; default may be empty (then the answer is mandatory)
-#         optional – asked only when its group is enabled ("configure now"); else left empty
+#         select   – pick one of <options>; then the keys of group "<group>-<choice>" are asked
+#         multi    – pick any of <options> (comma list, blank = none); each choice asks "<group>-<choice>"
+#         optional – asked when its group is chosen (by a select/multi, or storage-s3 for STORAGE_MODE=s3)
 #         secret   – like optional, input hidden
 #   default: may use {SLUG} {ENV} {ROOT_DOMAIN} {FRONTEND_HOST} {APP_NAME}
+#            {DISK} (s3 with MinIO/S3, else local) {KV} (redis, or database without Redis)
 #
 # Add a key here and it becomes configurable through `setup.sh vars <env>`.
 
@@ -16,22 +20,15 @@ APP_KEY|gen|core||Laravel encryption key (base64:…)
 APP_LOCALE|required|core|en|Default locale
 APP_FALLBACK_LOCALE|required|core|en|Fallback locale
 APP_TRUSTED_PROXIES|required|core|*|Trusted proxies (behind nginx/panel)
-APP_MAINTENANCE_DRIVER|required|core|file|Maintenance mode driver
 BCRYPT_ROUNDS|required|core|12|Bcrypt cost
 LOG_CHANNEL|required|core|stack|Log channel
 LOG_STACK|required|core|daily|Log stack
-SESSION_DRIVER|required|core|redis|Session driver
+SESSION_DRIVER|required|core|{KV}|Session driver
 SESSION_LIFETIME|required|core|120|Session lifetime (minutes)
-QUEUE_CONNECTION|required|core|redis|Queue connection
-CACHE_STORE|required|core|redis|Cache store
+QUEUE_CONNECTION|required|core|{KV}|Queue connection
+CACHE_STORE|required|core|{KV}|Cache store
 BROADCAST_CONNECTION|required|core|log|Broadcast connection
-FILESYSTEM_DISK|required|core|minio|Default filesystem disk (minio|s3|r2|local)
-MAIL_MAILER|required|core|smtp|Mail transport (smtp|log|mailgun|postmark|resend|sendmail)
-MAIL_FROM_ADDRESS|required|core|noreply@{ROOT_DOMAIN}|Mail from address
-MAIL_FROM_NAME|required|core|{APP_NAME}|Mail from name
-CAPTCHA_DRIVER|required|core|svg|Captcha driver
-SMS_DEFAULT_DRIVER|required|core|log|SMS driver (log|twilio|ssl|http)
-NEXT_PUBLIC_ENABLE_DIAGNOSTICS|required|core|false|Show diagnostics page in the frontend
+FILESYSTEM_DISK|required|core|{DISK}|Default filesystem disk (s3 also works with MinIO; 'minio' if your app defines that disk)
 
 # --- managed (scripts own these) ---
 APP_ENV|managed|core||
@@ -64,59 +61,72 @@ MINIO_URL|managed|storage||
 MINIO_USE_PATH_STYLE_ENDPOINT|managed|storage||
 GOOGLE_REDIRECT_URI|managed|oauth||
 FACEBOOK_REDIRECT_URI|managed|oauth||
+GITHUB_REDIRECT_URI|managed|oauth||
 NEXT_PUBLIC_SITE_URL|managed|core||
 NEXT_PUBLIC_API_URL|managed|core||
 NEXT_PUBLIC_MINIO_PUBLIC_BASE|managed|core||
 
 # --- mail ---
-MAIL_HOST|optional|mail||SMTP host
-MAIL_PORT|optional|mail|587|SMTP port
-MAIL_USERNAME|optional|mail||SMTP username
-MAIL_PASSWORD|secret|mail||SMTP password
-MAILGUN_DOMAIN|optional|mail||Mailgun domain
-MAILGUN_SECRET|secret|mail||Mailgun secret
-POSTMARK_API_KEY|secret|mail||Postmark API key
-RESEND_API_KEY|secret|mail||Resend API key
-
-# --- payments ---
-STRIPE_KEY|optional|payments||Stripe publishable key
-STRIPE_SECRET|secret|payments||Stripe secret key
-STRIPE_WEBHOOK_SECRET|secret|payments||Stripe webhook signing secret
-PAYPAL_CLIENT_ID|optional|payments||PayPal client id
-PAYPAL_SECRET|secret|payments||PayPal secret
-PAYPAL_MODE|optional|payments|sandbox|PayPal mode (sandbox|live)
-SSLCOMMERZ_STORE_ID|optional|payments||SSLCommerz store id
-SSLCOMMERZ_STORE_PASSWORD|secret|payments||SSLCommerz store password
-BKASH_APP_KEY|optional|payments||bKash app key
-BKASH_APP_SECRET|secret|payments||bKash app secret
-BKASH_USERNAME|optional|payments||bKash username
-BKASH_PASSWORD|secret|payments||bKash password
-NAGAD_MERCHANT_ID|optional|payments||Nagad merchant id
-NAGAD_PRIVATE_KEY|secret|payments||Nagad private key
-
-# --- oauth ---
-GOOGLE_CLIENT_ID|optional|oauth||Google OAuth client id
-GOOGLE_CLIENT_SECRET|secret|oauth||Google OAuth client secret
-FACEBOOK_CLIENT_ID|optional|oauth||Facebook OAuth client id
-FACEBOOK_CLIENT_SECRET|secret|oauth||Facebook OAuth client secret
+MAIL_MAILER|select|mail|log|Mail sending (log = no real mail)|log smtp mailgun postmark resend
+MAIL_FROM_ADDRESS|required|core|noreply@{ROOT_DOMAIN}|Mail from address
+MAIL_FROM_NAME|required|core|{APP_NAME}|Mail from name
+MAIL_HOST|optional|mail-smtp||SMTP host
+MAIL_PORT|optional|mail-smtp|587|SMTP port
+MAIL_USERNAME|optional|mail-smtp||SMTP username
+MAIL_PASSWORD|secret|mail-smtp||SMTP password
+MAIL_SCHEME|optional|mail-smtp||SMTP scheme (blank = auto, smtps = implicit TLS)
+MAILGUN_DOMAIN|optional|mail-mailgun||Mailgun domain
+MAILGUN_SECRET|secret|mail-mailgun||Mailgun API key
+MAILGUN_ENDPOINT|optional|mail-mailgun|api.mailgun.net|Mailgun endpoint (api.eu.mailgun.net for EU)
+POSTMARK_TOKEN|secret|mail-postmark||Postmark server token
+RESEND_KEY|secret|mail-resend||Resend API key
 
 # --- sms ---
-TWILIO_ACCOUNT_SID|optional|sms||Twilio account SID
-TWILIO_AUTH_TOKEN|secret|sms||Twilio auth token
-TWILIO_FROM_NUMBER|optional|sms||Twilio from number
-SSL_SMS_API_TOKEN|secret|sms||SSL Wireless API token
-SSL_SMS_SID|optional|sms||SSL Wireless SID
-SMS_HTTP_URL|optional|sms||Generic HTTP SMS gateway URL
-SMS_HTTP_API_KEY|secret|sms||Generic HTTP SMS API key
-SMS_HTTP_SENDER_ID|optional|sms||Generic HTTP SMS sender id
+SMS_DEFAULT_DRIVER|select|sms|log|SMS provider (log = no real SMS)|log twilio ssl http
+TWILIO_ACCOUNT_SID|optional|sms-twilio||Twilio account SID
+TWILIO_AUTH_TOKEN|secret|sms-twilio||Twilio auth token
+TWILIO_FROM_NUMBER|optional|sms-twilio||Twilio from number
+SSL_SMS_API_TOKEN|secret|sms-ssl||SSL Wireless API token
+SSL_SMS_SID|optional|sms-ssl||SSL Wireless SID
+SMS_HTTP_URL|optional|sms-http||HTTP SMS gateway URL
+SMS_HTTP_API_KEY|secret|sms-http||HTTP SMS API key
+SMS_HTTP_SENDER_ID|optional|sms-http||HTTP SMS sender id
 
-# --- storage (external S3/R2/B2/Cloudinary instead of bundled MinIO) ---
-AWS_ACCESS_KEY_ID|optional|storage||S3 access key
-AWS_SECRET_ACCESS_KEY|secret|storage||S3 secret key
-AWS_DEFAULT_REGION|optional|storage|us-east-1|S3 region
-AWS_BUCKET|optional|storage||S3 bucket
-AWS_URL|optional|storage||S3 public URL
-AWS_ENDPOINT|optional|storage||S3 endpoint (R2/B2/compatible)
-CLOUDINARY_CLOUD_NAME|optional|storage||Cloudinary cloud name
-CLOUDINARY_API_KEY|optional|storage||Cloudinary API key
-CLOUDINARY_API_SECRET|secret|storage||Cloudinary API secret
+# --- payments ---
+PAYMENT_GATEWAYS|multi|payments||Payment gateways to configure (blank = none)|stripe paypal sslcommerz bkash nagad
+STRIPE_KEY|optional|payments-stripe||Stripe publishable key
+STRIPE_SECRET|secret|payments-stripe||Stripe secret key
+STRIPE_WEBHOOK_SECRET|secret|payments-stripe||Stripe webhook signing secret
+PAYPAL_CLIENT_ID|optional|payments-paypal||PayPal client id
+PAYPAL_SECRET|secret|payments-paypal||PayPal secret
+PAYPAL_MODE|optional|payments-paypal|sandbox|PayPal mode (sandbox/live)
+SSLCOMMERZ_STORE_ID|optional|payments-sslcommerz||SSLCommerz store id
+SSLCOMMERZ_STORE_PASSWORD|secret|payments-sslcommerz||SSLCommerz store password
+SSLCOMMERZ_SANDBOX|optional|payments-sslcommerz|true|SSLCommerz sandbox (true/false)
+BKASH_APP_KEY|optional|payments-bkash||bKash app key
+BKASH_APP_SECRET|secret|payments-bkash||bKash app secret
+BKASH_USERNAME|optional|payments-bkash||bKash username
+BKASH_PASSWORD|secret|payments-bkash||bKash password
+BKASH_SANDBOX|optional|payments-bkash|true|bKash sandbox (true/false)
+NAGAD_MERCHANT_ID|optional|payments-nagad||Nagad merchant id
+NAGAD_PUBLIC_KEY|secret|payments-nagad||Nagad public key
+NAGAD_PRIVATE_KEY|secret|payments-nagad||Nagad private key
+NAGAD_SANDBOX|optional|payments-nagad|true|Nagad sandbox (true/false)
+
+# --- oauth ---
+OAUTH_PROVIDERS|multi|oauth||Social login providers (blank = none)|google facebook github
+GOOGLE_CLIENT_ID|optional|oauth-google||Google OAuth client id
+GOOGLE_CLIENT_SECRET|secret|oauth-google||Google OAuth client secret
+FACEBOOK_CLIENT_ID|optional|oauth-facebook||Facebook OAuth client id
+FACEBOOK_CLIENT_SECRET|secret|oauth-facebook||Facebook OAuth client secret
+GITHUB_CLIENT_ID|optional|oauth-github||GitHub OAuth client id
+GITHUB_CLIENT_SECRET|secret|oauth-github||GitHub OAuth client secret
+
+# --- external object storage (STORAGE_MODE=s3: AWS S3, Cloudflare R2, Backblaze B2, …) ---
+AWS_ACCESS_KEY_ID|optional|storage-s3||S3 access key
+AWS_SECRET_ACCESS_KEY|secret|storage-s3||S3 secret key
+AWS_DEFAULT_REGION|optional|storage-s3|us-east-1|S3 region (auto for R2)
+AWS_BUCKET|optional|storage-s3||S3 bucket
+AWS_URL|optional|storage-s3||Public URL of the bucket (CDN/custom domain)
+AWS_ENDPOINT|optional|storage-s3||S3 endpoint (blank for AWS; R2/B2/compatible URL)
+AWS_USE_PATH_STYLE_ENDPOINT|optional|storage-s3|false|Path-style endpoint (true for most S3-compatibles)

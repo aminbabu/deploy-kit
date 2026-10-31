@@ -1,0 +1,18 @@
+[Unit]
+Description=__SLUG__ MinIO object storage
+After=network-online.target __AFTER__
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=minio-user
+Group=minio-user
+EnvironmentFile=__ENVFILE__
+ExecStart=__BIN__ server __DATA__ --address __ADDR__ --console-address __CONSOLE__
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

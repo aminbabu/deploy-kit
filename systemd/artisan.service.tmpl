@@ -1,5 +1,5 @@
 [Unit]
-Description=__SLUG__ Laravel scheduler (__ENV__)
+Description=__SLUG__ __DESC__ (__ENV__)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,9 +8,12 @@ Type=simple
 User=__USER__
 Group=__GROUP__
 WorkingDirectory=__RUN__
-ExecStart=__PHP__ artisan schedule:work
+ExecStart=__PHP__ artisan __CMD__
 Restart=always
 RestartSec=5
+# Let a worker finish its current job on stop/restart.
+KillSignal=SIGTERM
+TimeoutStopSec=70
 NoNewPrivileges=true
 PrivateTmp=true
 

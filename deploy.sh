@@ -39,6 +39,8 @@ UP="$(dp_env_upper "$ENV_NAME")"
 ENV_DIR="$(dp_env_dir "$ENV_NAME")"
 ENV_FILE="$(dp_env_file "$ENV_NAME")"
 [[ -f "$ENV_FILE" ]] || dp_die "Missing ${ENV_FILE}. Run deploy/setup.sh."
+BACKEND_SRC="${REPO_ROOT}/${BACKEND_DIR}"
+FRONTEND_SRC="${REPO_ROOT}/${FRONTEND_DIR}"
 
 # --pull: move the checkout to the env branch, then re-exec the (possibly updated) script.
 if [[ "$PULL" == "1" ]]; then
@@ -68,12 +70,22 @@ HEALTH_HOST="$(dp_ev "$ENV_NAME" API_HOST)"
 API_PORT="$(dp_ev "$ENV_NAME" API_PORT)"
 FRONTEND_PORT="$(dp_ev "$ENV_NAME" FRONTEND_PORT)"
 
+# Optional parts of the app, as chosen in setup.sh.
+DP_ON="" DP_OFF=""
+_dp_part() { if [[ "$2" == y ]]; then DP_ON+=" $1"; else DP_OFF+=" $1"; fi; }
+_dp_part frontend "$FRONTEND_ENABLED"
+_dp_part horizon "$([[ $QUEUE_WORKER == horizon ]] && echo y || echo n)"
+_dp_part worker "$([[ $QUEUE_WORKER == worker ]] && echo y || echo n)"
+_dp_part scheduler "$SCHEDULER_ENABLED"
+QUEUE_WORK_ARGS="${QUEUE_WORK_ARGS:---sleep=3 --tries=3 --max-time=3600}"
+
 dp_health() {
-  local i api_ok=0 fe_ok=0
+  local i api_ok=0 fe_ok=1
+  dp_fe_on && fe_ok=0
   for i in $(seq 1 45); do
     [[ $api_ok == 1 ]] || { curl -fsS -o /dev/null --max-time 5 -H "Host: ${HEALTH_HOST}" "http://127.0.0.1:${API_PORT}/up" && api_ok=1; }
     [[ $fe_ok == 1 ]] || { curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${FRONTEND_PORT}/" && fe_ok=1; }
-    [[ $api_ok == 1 && $fe_ok == 1 ]] && { dp_ok "health: API :${API_PORT} and frontend :${FRONTEND_PORT}"; return 0; }
+    [[ $api_ok == 1 && $fe_ok == 1 ]] && { dp_ok "health: API :${API_PORT}$(dp_fe_on && echo " and frontend :${FRONTEND_PORT}")"; return 0; }
     sleep 2
   done
   dp_warn "health check failed (api=${api_ok} frontend=${fe_ok})"
@@ -85,14 +97,37 @@ dp_maybe_backup() {
   dp_backup_db "$ENV_NAME"
 }
 
+# NEXT_PUBLIC_* values of this env: "KEY=value" lines (build args / build env).
+dp_public_env() {
+  local k
+  while IFS= read -r k; do printf '%s=%s\n' "$k" "$(dp_env_value "$ENV_FILE" "$k")"; done \
+    < <(grep -oE '^NEXT_PUBLIC_[A-Za-z0-9_]+' "$ENV_FILE" | sort -u)
+}
+
 # --- docker runtime -----------------------------------------------------------
 # Compose interpolation inputs (exported once; image tags vary per call).
-export PROJECT_SLUG ENV_FILE API_PORT FRONTEND_PORT
-export DP_ENV="$ENV_NAME" DP_NETWORK; DP_NETWORK="$(dp_network)"
+export PROJECT_SLUG ENV_FILE API_PORT FRONTEND_PORT QUEUE_WORK_ARGS
+export DP_ENV="$ENV_NAME" DP_NETWORK COMPOSE_PROFILES
+COMPOSE_PROFILES="$(echo $DP_ON | tr ' ' ',')"
 
 dp_app_compose() { # <release-sha> compose-args...
-  BACKEND_IMAGE="${PROJECT_SLUG}-backend:${ENV_NAME}-$1" FRONTEND_IMAGE="${PROJECT_SLUG}-frontend:${ENV_NAME}-$1" \
+  DP_NETWORK="$(dp_network)" BACKEND_IMAGE="${PROJECT_SLUG}-backend:${ENV_NAME}-$1" FRONTEND_IMAGE="${PROJECT_SLUG}-frontend:${ENV_NAME}-$1" \
     docker compose -f "${DP_ROOT}/compose/app.yml" "${@:2}"
+}
+
+# Stop parts that were switched off (a disabled profile is not an orphan).
+dp_app_prune_off() { # <release-sha>
+  [[ -n "${DP_OFF// }" ]] || return 0
+  COMPOSE_PROFILES=frontend,horizon,worker,scheduler dp_app_compose "$1" rm -sf $DP_OFF >/dev/null 2>&1 || true
+}
+
+# Ask the running worker to finish its jobs and exit before the new release starts.
+dp_worker_drain() { # <release-sha>
+  [[ -n "$1" ]] || return 0
+  case "$QUEUE_WORKER" in
+    horizon) dp_app_compose "$1" exec -T horizon php artisan horizon:terminate 2>/dev/null || true ;;
+    worker) dp_app_compose "$1" exec -T worker php artisan queue:restart 2>/dev/null || true ;;
+  esac
 }
 
 deploy_docker() {
@@ -102,28 +137,30 @@ deploy_docker() {
     [[ -n "$target" ]] || dp_die "No previous release recorded for ${ENV_NAME}."
     dp_info "Rolling back ${ENV_NAME} to ${target} (database migrations are NOT reverted)"
     dp_app_compose "$target" up -d --remove-orphans
+    dp_app_prune_off "$target"
     dp_health || dp_die "rollback release is unhealthy too"
     dp_state_set "${UP}_DEPLOYED_SHA" "$target"; dp_state_set "${UP}_PREV_SHA" "$prev"
     SHA="$target"; RESULT=rolled-back; return 0
   fi
 
   dp_ensure_network
-  local nb; nb="$(dp_env_value "$ENV_FILE" NEXT_PUBLIC_ENABLE_DIAGNOSTICS)"
-  dp_info "Build backend image"
-  docker build -q -t "${PROJECT_SLUG}-backend:${ENV_NAME}-${SHA}" -f "${REPO_ROOT}/backend/Dockerfile" "${REPO_ROOT}/backend" >/dev/null
-  dp_info "Build frontend image (NEXT_PUBLIC_* from ${ENV_FILE})"
-  docker build -q -t "${PROJECT_SLUG}-frontend:${ENV_NAME}-${SHA}" -f "${REPO_ROOT}/frontend/Dockerfile" \
-    --build-arg "NEXT_PUBLIC_SITE_URL=$(dp_env_value "$ENV_FILE" NEXT_PUBLIC_SITE_URL)" \
-    --build-arg "NEXT_PUBLIC_API_URL=$(dp_env_value "$ENV_FILE" NEXT_PUBLIC_API_URL)" \
-    --build-arg "NEXT_PUBLIC_MINIO_PUBLIC_BASE=$(dp_env_value "$ENV_FILE" NEXT_PUBLIC_MINIO_PUBLIC_BASE)" \
-    --build-arg "NEXT_PUBLIC_ENABLE_DIAGNOSTICS=${nb:-false}" "$REPO_ROOT" >/dev/null
+  dp_info "Build backend image (${BACKEND_DOCKERFILE})"
+  docker build -q -t "${PROJECT_SLUG}-backend:${ENV_NAME}-${SHA}" -f "${REPO_ROOT}/${BACKEND_DOCKERFILE}" "${REPO_ROOT}/${BACKEND_CONTEXT}" >/dev/null
+  if dp_fe_on; then
+    local bargs=() kv
+    while IFS= read -r kv; do bargs+=(--build-arg "$kv"); done < <(dp_public_env)
+    dp_info "Build frontend image (${FRONTEND_DOCKERFILE}; ${#bargs[@]} NEXT_PUBLIC_* args)"
+    docker build -q -t "${PROJECT_SLUG}-frontend:${ENV_NAME}-${SHA}" -f "${REPO_ROOT}/${FRONTEND_DOCKERFILE}" \
+      "${bargs[@]}" "${REPO_ROOT}/${FRONTEND_CONTEXT}" >/dev/null
+  fi
 
   dp_maybe_backup
   dp_info "Migrate"
   dp_app_compose "$SHA" run --rm -T app php artisan migrate --force
-  [[ -n "$prev" ]] && dp_app_compose "$prev" exec -T horizon php artisan horizon:terminate 2>/dev/null || true
-  dp_info "Start release ${SHA}"
+  dp_worker_drain "$prev"
+  dp_info "Start release ${SHA} (app, nginx${DP_ON// /, })"
   dp_app_compose "$SHA" up -d --remove-orphans
+  dp_app_prune_off "$SHA"
 
   if ! dp_health; then
     if [[ -n "$prev" ]]; then
@@ -138,65 +175,81 @@ deploy_docker() {
 
   # Keep the 3 newest image tags per env.
   local repo
-  for repo in backend frontend; do
+  for repo in backend $(dp_fe_on && echo frontend); do
     docker image ls --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}}' "${PROJECT_SLUG}-${repo}" \
       | grep " " | grep ":${ENV_NAME}-" | sort -k2 -r | awk 'NR > 3 { print $1 }' | xargs -r docker image rm >/dev/null 2>&1 || true
   done
 }
 
-# --- host runtime -------------------------------------------------------------
-deploy_host() {
-  [[ "$ROLLBACK" == "0" ]] || dp_die "--rollback is only available for the docker runtime."
-  local php_bin node_bin
-  php_bin="$(command -v php)" || dp_die "php not found"
-  node_bin="$(command -v node)" || dp_die "node not found"
+# --- native runtime -----------------------------------------------------------
+DP_UNITS=()
+# Write (or remove when off) one systemd unit for this env: <kind> <y|n> <template> sed-args...
+_dp_unit() {
+  local kind="$1" on="$2" tpl="$3" unit="${PROJECT_SLUG}-${1}-${ENV_NAME}.service"; shift 3
+  if [[ "$on" != y ]]; then
+    sudo systemctl disable --now "$unit" 2>/dev/null || true
+    sudo rm -f "/etc/systemd/system/${unit}"
+    return 0
+  fi
+  sed -e "s|__SLUG__|${PROJECT_SLUG}|g" -e "s|__ENV__|${ENV_NAME}|g" -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" "$@" \
+    "${DP_ROOT}/systemd/${tpl}" | sudo tee "/etc/systemd/system/${unit}" >/dev/null
+  DP_UNITS+=("$unit")
+}
 
-  dp_info "Backend dependencies"
-  (cd "${REPO_ROOT}/backend" && composer install --no-dev --optimize-autoloader --no-interaction --quiet)
-  dp_publish_backend "$ENV_DIR" "${REPO_ROOT}/backend" "$ENV_FILE"
+deploy_native() {
+  [[ "$ROLLBACK" == "0" ]] || dp_die "--rollback is only available for the docker runtime."
+  local php_bin node_bin=""
+  php_bin="$(command -v php)" || dp_die "php not found (run: deploy/setup.sh services)"
+  command -v composer >/dev/null 2>&1 || dp_die "composer not found"
+
+  dp_info "Backend dependencies (${BACKEND_DIR})"
+  (cd "$BACKEND_SRC" && composer install --no-dev --optimize-autoloader --no-interaction --quiet)
+  dp_publish_backend "$ENV_DIR" "$BACKEND_SRC" "$ENV_FILE"
 
   dp_maybe_backup
   dp_info "Migrate + caches"
   (cd "$BACKEND_RUN" && "$php_bin" artisan migrate --force && "$php_bin" artisan config:cache \
     && "$php_bin" artisan route:cache && "$php_bin" artisan view:cache && "$php_bin" artisan event:cache)
-  dp_verify_backend_config "$BACKEND_RUN" "$(dp_env_value "$ENV_FILE" APP_URL)" "$(dp_env_value "$ENV_FILE" FRONTEND_URL)"
+  dp_verify_backend_config "$BACKEND_RUN" "$(dp_env_value "$ENV_FILE" APP_URL)" "$(dp_fe_on && dp_env_value "$ENV_FILE" FRONTEND_URL)"
 
-  dp_info "Frontend build"
-  (cd "$REPO_ROOT" && { command -v pnpm >/dev/null 2>&1 || corepack enable; } \
-    && pnpm install --frozen-lockfile --filter frontend... >/dev/null \
-    && NEXT_PUBLIC_SITE_URL="$(dp_env_value "$ENV_FILE" NEXT_PUBLIC_SITE_URL)" \
-       NEXT_PUBLIC_API_URL="$(dp_env_value "$ENV_FILE" NEXT_PUBLIC_API_URL)" \
-       NEXT_PUBLIC_MINIO_PUBLIC_BASE="$(dp_env_value "$ENV_FILE" NEXT_PUBLIC_MINIO_PUBLIC_BASE)" \
-       NEXT_PUBLIC_ENABLE_DIAGNOSTICS="$(dp_env_value "$ENV_FILE" NEXT_PUBLIC_ENABLE_DIAGNOSTICS)" \
-       NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1536}" \
-       pnpm --filter frontend build)
-  dp_publish_frontend "$ENV_DIR" "$REPO_ROOT"
+  if dp_fe_on; then
+    node_bin="$(command -v node)" || dp_die "node not found"
+    local pub=() kv
+    while IFS= read -r kv; do pub+=("$kv"); done < <(dp_public_env)
+    if [[ "$FRONTEND_INSTALL_CMD$FRONTEND_BUILD_CMD" =~ (pnpm|yarn) ]] && ! command -v "${BASH_REMATCH[1]}" >/dev/null 2>&1; then
+      corepack enable 2>/dev/null || sudo corepack enable
+    fi
+    dp_info "Frontend install + build (${FRONTEND_DIR})"
+    (cd "$REPO_ROOT" && bash -c "$FRONTEND_INSTALL_CMD" >/dev/null \
+      && env "${pub[@]}" NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1536}" bash -c "$FRONTEND_BUILD_CMD")
+    dp_publish_frontend "$ENV_DIR" "$FRONTEND_SRC"
+  fi
 
-  dp_info "Horizon container"
-  docker build -q -t "${PROJECT_SLUG}-backend:${ENV_NAME}-${SHA}" -f "${REPO_ROOT}/backend/Dockerfile" "${REPO_ROOT}/backend" >/dev/null
-  local image="${PROJECT_SLUG}-backend:${ENV_NAME}-${SHA}"
-  STORAGE_DIR="${ENV_DIR}/storage" BACKEND_IMAGE="$image" DP_UID="$(id -u)" DP_GID="$(id -g)" \
-    docker compose -f "${DP_ROOT}/compose/horizon.yml" up -d --remove-orphans
+  # Layout before queue workers ran under systemd: a Horizon container per env.
+  command -v docker >/dev/null 2>&1 && { docker compose -p "${PROJECT_SLUG}-${ENV_NAME}-horizon" down >/dev/null 2>&1 || true; }
 
-  dp_info "systemd units"
-  local unit kind
-  for kind in frontend scheduler; do
-    unit="${PROJECT_SLUG}-${kind}-${ENV_NAME}.service"
-    sed -e "s|__SLUG__|${PROJECT_SLUG}|g" -e "s|__ENV__|${ENV_NAME}|g" -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" \
-        -e "s|__PORT__|${FRONTEND_PORT}|g" -e "s|__NODE__|${node_bin}|g" -e "s|__PHP__|${php_bin}|g" \
-        -e "s|__RUN__|$([[ $kind == frontend ]] && echo "$FRONTEND_RUN" || echo "$BACKEND_RUN")|g" \
-        "${DP_ROOT}/systemd/${kind}.service.tmpl" | sudo tee "/etc/systemd/system/${unit}" >/dev/null
-  done
+  dp_info "systemd units (${DP_ON# })"
+  local worker_cmd="horizon"
+  [[ "$QUEUE_WORKER" == worker ]] && worker_cmd="queue:work ${QUEUE_WORK_ARGS}"
+  _dp_unit frontend "$FRONTEND_ENABLED" frontend.service.tmpl \
+    -e "s|__PORT__|${FRONTEND_PORT}|g" -e "s|__NODE__|${node_bin}|g" -e "s|__RUN__|${FRONTEND_RUN:-}|g" -e "s|__ENTRY__|${FRONTEND_ENTRY:-}|g"
+  _dp_unit worker "$([[ $QUEUE_WORKER != none ]] && echo y || echo n)" artisan.service.tmpl \
+    -e "s|__DESC__|queue worker (${QUEUE_WORKER})|g" -e "s|__CMD__|${worker_cmd}|g" -e "s|__PHP__|${php_bin}|g" -e "s|__RUN__|${BACKEND_RUN}|g"
+  _dp_unit scheduler "$SCHEDULER_ENABLED" artisan.service.tmpl \
+    -e "s|__DESC__|scheduler|g" -e "s|__CMD__|schedule:work|g" -e "s|__PHP__|${php_bin}|g" -e "s|__RUN__|${BACKEND_RUN}|g"
   sudo systemctl daemon-reload
-  sudo systemctl enable --now "${PROJECT_SLUG}-frontend-${ENV_NAME}.service" "${PROJECT_SLUG}-scheduler-${ENV_NAME}.service" >/dev/null
-  sudo systemctl restart "${PROJECT_SLUG}-frontend-${ENV_NAME}.service" "${PROJECT_SLUG}-scheduler-${ENV_NAME}.service"
+  if (( ${#DP_UNITS[@]} )); then
+    [[ "$QUEUE_WORKER" == horizon ]] && { (cd "$BACKEND_RUN" && "$php_bin" artisan horizon:terminate >/dev/null 2>&1) || true; }
+    sudo systemctl enable "${DP_UNITS[@]}" >/dev/null 2>&1
+    sudo systemctl restart "${DP_UNITS[@]}"
+  fi
   [[ -n "${FPM_SERVICE:-}" ]] && sudo systemctl reload "$FPM_SERVICE"
 
   dp_health || dp_die "Release ${SHA} failed its health check."
   dp_state_set "${UP}_DEPLOYED_SHA" "$SHA"
 }
 
-if [[ "$RUNTIME" == "docker" ]]; then deploy_docker; else deploy_host; fi
+if [[ "$RUNTIME" == "docker" ]]; then deploy_docker; else deploy_native; fi
 dp_check_cors "$ENV_NAME" || true
 RESULT=${RESULT/failed/ok}
 dp_ok "Deployed ${ENV_NAME} @ ${SHA}"

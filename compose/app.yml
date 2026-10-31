@@ -1,6 +1,7 @@
 # Per-env app stack for RUNTIME=docker. Driven by deploy/deploy.sh:
 #   PROJECT_SLUG, DP_ENV, DP_NETWORK, ENV_FILE, BACKEND_IMAGE, FRONTEND_IMAGE,
-#   API_PORT, FRONTEND_PORT (loopback; the edge/panel proxies to them)
+#   API_PORT, FRONTEND_PORT (loopback; the edge/panel proxies to them),
+#   COMPOSE_PROFILES (frontend, horizon|worker, scheduler — the parts chosen in setup.sh)
 
 name: ${PROJECT_SLUG:?}-${DP_ENV:?}
 
@@ -42,24 +43,36 @@ services:
     logging: *logging
     deploy: { resources: { limits: { memory: "${NGINX_MEM_LIMIT:-128M}" } } }
 
+  # Optional components, switched on through COMPOSE_PROFILES by deploy.sh.
   horizon:
     <<: *backend
+    profiles: [horizon]
     command: php artisan horizon
     stop_grace_period: 60s
     depends_on: [app]
     deploy: { resources: { limits: { memory: "${HORIZON_MEM_LIMIT:-512M}" } } }
 
+  worker:
+    <<: *backend
+    profiles: [worker]
+    command: php artisan queue:work ${QUEUE_WORK_ARGS:---sleep=3 --tries=3 --max-time=3600}
+    stop_grace_period: 60s
+    depends_on: [app]
+    deploy: { resources: { limits: { memory: "${WORKER_MEM_LIMIT:-512M}" } } }
+
   scheduler:
     <<: *backend
+    profiles: [scheduler]
     command: php artisan schedule:work
     depends_on: [app]
     deploy: { resources: { limits: { memory: "${SCHEDULER_MEM_LIMIT:-256M}" } } }
 
   frontend:
-    image: ${FRONTEND_IMAGE:?}
+    profiles: [frontend]
+    image: ${FRONTEND_IMAGE:-none}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:?}:3000"
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     networks: [data]
     logging: *logging
     deploy: { resources: { limits: { memory: "${FRONTEND_MEM_LIMIT:-512M}" } } }

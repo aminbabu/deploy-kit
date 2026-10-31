@@ -1,0 +1,12 @@
+# Project-specific variables. Copy to deploy/vars.extra.catalog in your app repo; the
+# wizard reads it after vars.catalog (same format: KEY|kind|group|default|help|options).
+# Every NEXT_PUBLIC_* key is passed to the frontend build automatically.
+
+CAPTCHA_DRIVER|required|core|svg|Captcha driver
+NEXT_PUBLIC_ENABLE_DIAGNOSTICS|required|core|false|Show diagnostics page in the frontend
+APP_MAINTENANCE_DRIVER|required|core|file|Maintenance mode driver
+
+# A select with its own groups:
+# SEARCH_DRIVER|select|search|database|Search engine|database meilisearch
+# MEILISEARCH_HOST|optional|search-meilisearch|http://127.0.0.1:7700|Meilisearch URL
+# MEILISEARCH_KEY|secret|search-meilisearch||Meilisearch key

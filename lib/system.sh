@@ -44,7 +44,7 @@ dp_preflight() {
   mem_mb="$(awk '/MemTotal/ { print int($2/1024) }' /proc/meminfo 2>/dev/null || echo 0)"
   disk_gb="$(df -Pk "$HOME" | awk 'NR==2 { print int($4/1024/1024) }')"
   dp_ok "memory ${mem_mb} MB, free disk ${disk_gb} GB"
-  (( mem_mb == 0 || mem_mb >= 1800 )) || dp_warn "Under 2 GB RAM: Next.js builds may be killed; enable swap in the hardening step."
+  (( mem_mb == 0 || mem_mb >= 1800 )) || dp_warn "Under 2 GB RAM: frontend/image builds may be killed; enable swap in the hardening step."
   (( disk_gb >= 8 )) || dp_warn "Under 8 GB free disk; Docker images and backups need room."
 }
 
@@ -59,7 +59,9 @@ dp_port_in_use() {
 # (no subshell, so claims made for earlier envs are remembered).
 dp_pick_port() {
   local p="$1"
-  while dp_port_in_use "$p" || [[ " ${DP_CLAIMED_PORTS:-} " == *" ${p} "* ]]; do p=$((p + 1)); done
+  while dp_port_in_use "$p" || [[ " ${DP_CLAIMED_PORTS:-} " == *" ${p} "* ]]; do
+    p=$((p + 1)); (( p < $1 + 1000 )) || dp_die "no free port found from $1 (is ss/lsof working?)"
+  done
   DP_PICKED="$p"
 }
 dp_claim_port() { DP_CLAIMED_PORTS+=" $1"; }
@@ -95,6 +97,8 @@ dp_harden() {
         sudo ufw allow "${PUBLIC_HTTPS_PORT:-443}/tcp" >/dev/null
       fi
       sudo ufw --force enable >/dev/null && dp_ok "ufw enabled"
+      # Containers reaching natively installed services come in through the bridge.
+      if [[ "$DB_MODE" == native || "$REDIS_MODE" == native || "$(dp_minio_mode)" == native ]]; then dp_allow_bridge; fi
     fi
   fi
   if ! swapon --show 2>/dev/null | grep -q . && dp_yes "No swap found. Create a 2 GB swapfile (helps builds on small VPS)?" y DP_HARDEN_SWAP; then

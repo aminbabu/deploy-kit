@@ -1,22 +1,24 @@
-# Bundled data services shared by all envs of one project (SERVICES_MODE=bundled).
-# Managed by deploy/lib/services.sh — values come from project.env + shared/secrets.env.
-# Ports are bound to loopback only (host runtime and Horizon use them; docker runtime
-# reaches the services on the project network as db / redis / minio).
+# Docker-mode data services shared by all envs of one project. Each one is a profile,
+# switched on by deploy/lib/services.sh when its component mode is "docker".
+# Values come from project.env + shared/secrets.env. Ports are bound to loopback only
+# (a native app runtime uses them; app containers reach the services on the project
+# network as db / redis / minio).
 
 name: ${PROJECT_SLUG:?}-services
 
 services:
-  db:
-    image: postgres:16-alpine
+  db:   # PostgreSQL
+    profiles: [postgres]
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_SUPERUSER:?}
-      POSTGRES_PASSWORD: ${POSTGRES_SUPERPASS:?}
+      POSTGRES_USER: ${DB_ROOT_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_ROOT_PASSWORD:-}
       POSTGRES_DB: postgres
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "127.0.0.1:${PG_PORT:-5432}:5432"
+      - "127.0.0.1:${DB_LOCAL_PORT:-5432}:5432"
     networks: [data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres"]
@@ -27,8 +29,29 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
 
+  mariadb:   # MySQL-compatible
+    profiles: [mariadb]
+    image: ${MARIADB_IMAGE:-mariadb:11}
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-}
+    volumes:
+      - mariadb:/var/lib/mysql
+    ports:
+      - "127.0.0.1:${DB_LOCAL_PORT:-3306}:3306"
+    networks:
+      data:
+        aliases: [db]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
   redis:
-    image: redis:7-alpine
+    profiles: [redis]
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     restart: unless-stopped
     # requirepass only when REDIS_PASSWORD is set.
     command: ["sh", "-c", "exec redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}"]
@@ -47,12 +70,13 @@ services:
     logging: *logging
 
   minio:
-    image: minio/minio:latest
+    profiles: [minio]
+    image: ${MINIO_IMAGE:-minio/minio:latest}
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
     volumes:
       - minio:/data
     ports:
@@ -73,5 +97,6 @@ networks:
 
 volumes:
   pgdata:
+  mariadb:
   redis:
   minio:

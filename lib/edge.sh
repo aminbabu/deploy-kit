@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Public edge: host nginx sites (certbot | byo cert) or upstream list for a panel (panel).
-# Host runtime additionally gets a loopback nginx block per env in front of PHP-FPM.
+# Native runtime additionally gets a loopback nginx block per env in front of PHP-FPM.
 
 DP_NGINX_AVAIL="${DP_NGINX_AVAIL:-/etc/nginx/sites-available}"
 DP_NGINX_ENABLED="${DP_NGINX_ENABLED:-/etc/nginx/sites-enabled}"
@@ -16,15 +16,16 @@ _dp_render() { # template dest VAR=value...
 dp_edge_sites() {
   local env
   for env in $ENABLED_ENVS; do
-    echo "$(dp_ev "$env" FRONTEND_HOST) 127.0.0.1:$(dp_ev "$env" FRONTEND_PORT)"
+    dp_fe_on && echo "$(dp_ev "$env" FRONTEND_HOST) 127.0.0.1:$(dp_ev "$env" FRONTEND_PORT)"
     echo "$(dp_ev "$env" API_HOST) 127.0.0.1:$(dp_ev "$env" API_PORT)"
   done
-  if [[ -n "${MEDIA_HOST:-}" && "$SERVICES_MODE" == "bundled" ]]; then
-    echo "${MEDIA_HOST} 127.0.0.1:${MINIO_PORT}"
+  if [[ -n "${MEDIA_HOST:-}" ]] && dp_minio_on; then
+    echo "${MEDIA_HOST} $(dp_minio_upstream)"
   fi
+  return 0
 }
 
-dp_edge_need_nginx() { [[ "$EDGE_MODE" != "panel" || "$RUNTIME" == "host" ]]; }
+dp_edge_need_nginx() { [[ "$EDGE_MODE" != "panel" || "$RUNTIME" == "native" ]]; }
 
 dp_edge_prereqs() {
   dp_edge_need_nginx || return 0
@@ -66,7 +67,7 @@ dp_edge_apply() {
     _dp_render map.conf.template "/etc/nginx/conf.d/00-${PROJECT_SLUG}-map.conf" SLUG="$PROJECT_SLUG" MAP_VAR="$map_var"
   fi
 
-  if [[ "$RUNTIME" == "host" ]]; then
+  if [[ "$RUNTIME" == "native" ]]; then
     local env
     for env in $ENABLED_ENVS; do
       name="$(_dp_site_name "${env}-api-fpm")"
