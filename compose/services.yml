@@ -1,0 +1,77 @@
+# Bundled data services shared by all envs of one project (SERVICES_MODE=bundled).
+# Managed by deploy/lib/services.sh — values come from project.env + shared/secrets.env.
+# Ports are bound to loopback only (host runtime and Horizon use them; docker runtime
+# reaches the services on the project network as db / redis / minio).
+
+name: ${PROJECT_SLUG:?}-services
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERPASS:?}
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${PG_PORT:-5432}:5432"
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: &logging
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # requirepass only when REDIS_PASSWORD is set.
+    command: ["sh", "-c", "exec redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    volumes:
+      - redis:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -n \"$$REDIS_PASSWORD\" ]; then REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping; else redis-cli ping; fi | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    volumes:
+      - minio:/data
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x minio >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+networks:
+  data:
+    external: true
+    name: ${DP_NETWORK:?}
+
+volumes:
+  pgdata:
+  redis:
+  minio:

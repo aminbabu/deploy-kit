@@ -1,0 +1,21 @@
+# ${ENV_NAME} API (host runtime): loopback → PHP-FPM. The public edge or panel proxies here.
+server {
+    listen 127.0.0.1:${API_PORT};
+    server_name _;
+    root ${BACKEND_PUBLIC};
+    index index.php;
+    client_max_body_size ${MAX_BODY};
+
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:${FPM_SOCK};
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_param DOCUMENT_ROOT $realpath_root;
+        fastcgi_param HTTPS on;
+        fastcgi_read_timeout 120s;
+    }
+
+    location ~ /\.(?!well-known) { deny all; }
+}

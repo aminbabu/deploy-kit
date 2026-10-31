@@ -1,0 +1,122 @@
+# Environment variable catalog for deploy/setup.sh.
+#
+# KEY|kind|group|default|help
+#   kind: managed  – written by the scripts (URLs, DB, Redis, storage, build); never asked
+#         gen      – per-env secret generated once (Enter keeps it)
+#         required – asked for every env; default may be empty (then the answer is mandatory)
+#         optional – asked only when its group is enabled ("configure now"); else left empty
+#         secret   – like optional, input hidden
+#   default: may use {SLUG} {ENV} {ROOT_DOMAIN} {FRONTEND_HOST} {APP_NAME}
+#
+# Add a key here and it becomes configurable through `setup.sh vars <env>`.
+
+# --- core (always) ---
+APP_NAME|required|core|{SLUG}|Application display name
+APP_KEY|gen|core||Laravel encryption key (base64:…)
+APP_LOCALE|required|core|en|Default locale
+APP_FALLBACK_LOCALE|required|core|en|Fallback locale
+APP_TRUSTED_PROXIES|required|core|*|Trusted proxies (behind nginx/panel)
+APP_MAINTENANCE_DRIVER|required|core|file|Maintenance mode driver
+BCRYPT_ROUNDS|required|core|12|Bcrypt cost
+LOG_CHANNEL|required|core|stack|Log channel
+LOG_STACK|required|core|daily|Log stack
+SESSION_DRIVER|required|core|redis|Session driver
+SESSION_LIFETIME|required|core|120|Session lifetime (minutes)
+QUEUE_CONNECTION|required|core|redis|Queue connection
+CACHE_STORE|required|core|redis|Cache store
+BROADCAST_CONNECTION|required|core|log|Broadcast connection
+FILESYSTEM_DISK|required|core|minio|Default filesystem disk (minio|s3|r2|local)
+MAIL_MAILER|required|core|smtp|Mail transport (smtp|log|mailgun|postmark|resend|sendmail)
+MAIL_FROM_ADDRESS|required|core|noreply@{ROOT_DOMAIN}|Mail from address
+MAIL_FROM_NAME|required|core|{APP_NAME}|Mail from name
+CAPTCHA_DRIVER|required|core|svg|Captcha driver
+SMS_DEFAULT_DRIVER|required|core|log|SMS driver (log|twilio|ssl|http)
+NEXT_PUBLIC_ENABLE_DIAGNOSTICS|required|core|false|Show diagnostics page in the frontend
+
+# --- managed (scripts own these) ---
+APP_ENV|managed|core||
+APP_DEBUG|managed|core||
+APP_URL|managed|core||
+FRONTEND_URL|managed|core||
+LOG_LEVEL|managed|core||
+SESSION_ENCRYPT|managed|core||
+SESSION_DOMAIN|managed|core||
+SANCTUM_STATEFUL_DOMAINS|managed|core||
+CORS_ALLOWED_ORIGINS|managed|core||
+DB_CONNECTION|managed|core||
+DB_HOST|managed|core||
+DB_PORT|managed|core||
+DB_DATABASE|managed|core||
+DB_USERNAME|managed|core||
+DB_PASSWORD|managed|core||
+REDIS_CLIENT|managed|core||
+REDIS_HOST|managed|core||
+REDIS_PORT|managed|core||
+REDIS_PASSWORD|managed|core||
+REDIS_DB|managed|core||
+CACHE_PREFIX|managed|core||
+MINIO_ACCESS_KEY_ID|managed|storage||
+MINIO_SECRET_ACCESS_KEY|managed|storage||
+MINIO_REGION|managed|storage||
+MINIO_BUCKET|managed|storage||
+MINIO_ENDPOINT|managed|storage||
+MINIO_URL|managed|storage||
+MINIO_USE_PATH_STYLE_ENDPOINT|managed|storage||
+GOOGLE_REDIRECT_URI|managed|oauth||
+FACEBOOK_REDIRECT_URI|managed|oauth||
+NEXT_PUBLIC_SITE_URL|managed|core||
+NEXT_PUBLIC_API_URL|managed|core||
+NEXT_PUBLIC_MINIO_PUBLIC_BASE|managed|core||
+
+# --- mail ---
+MAIL_HOST|optional|mail||SMTP host
+MAIL_PORT|optional|mail|587|SMTP port
+MAIL_USERNAME|optional|mail||SMTP username
+MAIL_PASSWORD|secret|mail||SMTP password
+MAILGUN_DOMAIN|optional|mail||Mailgun domain
+MAILGUN_SECRET|secret|mail||Mailgun secret
+POSTMARK_API_KEY|secret|mail||Postmark API key
+RESEND_API_KEY|secret|mail||Resend API key
+
+# --- payments ---
+STRIPE_KEY|optional|payments||Stripe publishable key
+STRIPE_SECRET|secret|payments||Stripe secret key
+STRIPE_WEBHOOK_SECRET|secret|payments||Stripe webhook signing secret
+PAYPAL_CLIENT_ID|optional|payments||PayPal client id
+PAYPAL_SECRET|secret|payments||PayPal secret
+PAYPAL_MODE|optional|payments|sandbox|PayPal mode (sandbox|live)
+SSLCOMMERZ_STORE_ID|optional|payments||SSLCommerz store id
+SSLCOMMERZ_STORE_PASSWORD|secret|payments||SSLCommerz store password
+BKASH_APP_KEY|optional|payments||bKash app key
+BKASH_APP_SECRET|secret|payments||bKash app secret
+BKASH_USERNAME|optional|payments||bKash username
+BKASH_PASSWORD|secret|payments||bKash password
+NAGAD_MERCHANT_ID|optional|payments||Nagad merchant id
+NAGAD_PRIVATE_KEY|secret|payments||Nagad private key
+
+# --- oauth ---
+GOOGLE_CLIENT_ID|optional|oauth||Google OAuth client id
+GOOGLE_CLIENT_SECRET|secret|oauth||Google OAuth client secret
+FACEBOOK_CLIENT_ID|optional|oauth||Facebook OAuth client id
+FACEBOOK_CLIENT_SECRET|secret|oauth||Facebook OAuth client secret
+
+# --- sms ---
+TWILIO_ACCOUNT_SID|optional|sms||Twilio account SID
+TWILIO_AUTH_TOKEN|secret|sms||Twilio auth token
+TWILIO_FROM_NUMBER|optional|sms||Twilio from number
+SSL_SMS_API_TOKEN|secret|sms||SSL Wireless API token
+SSL_SMS_SID|optional|sms||SSL Wireless SID
+SMS_HTTP_URL|optional|sms||Generic HTTP SMS gateway URL
+SMS_HTTP_API_KEY|secret|sms||Generic HTTP SMS API key
+SMS_HTTP_SENDER_ID|optional|sms||Generic HTTP SMS sender id
+
+# --- storage (external S3/R2/B2/Cloudinary instead of bundled MinIO) ---
+AWS_ACCESS_KEY_ID|optional|storage||S3 access key
+AWS_SECRET_ACCESS_KEY|secret|storage||S3 secret key
+AWS_DEFAULT_REGION|optional|storage|us-east-1|S3 region
+AWS_BUCKET|optional|storage||S3 bucket
+AWS_URL|optional|storage||S3 public URL
+AWS_ENDPOINT|optional|storage||S3 endpoint (R2/B2/compatible)
+CLOUDINARY_CLOUD_NAME|optional|storage||Cloudinary cloud name
+CLOUDINARY_API_KEY|optional|storage||Cloudinary API key
+CLOUDINARY_API_SECRET|secret|storage||Cloudinary API secret

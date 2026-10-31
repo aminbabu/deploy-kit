@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Public edge: host nginx sites (certbot | byo cert) or upstream list for a panel (panel).
+# Host runtime additionally gets a loopback nginx block per env in front of PHP-FPM.
+
+DP_NGINX_AVAIL="${DP_NGINX_AVAIL:-/etc/nginx/sites-available}"
+DP_NGINX_ENABLED="${DP_NGINX_ENABLED:-/etc/nginx/sites-enabled}"
+
+_dp_render() { # template dest VAR=value...
+  local tpl="$1" dest="$2"; shift 2
+  local vars="" kv
+  for kv in "$@"; do export "${kv?}"; vars+=" \${${kv%%=*}}"; done
+  envsubst "$vars" <"${DP_ROOT}/nginx/${tpl}" | sudo tee "$dest" >/dev/null
+}
+
+# "host upstream" lines for every public site of the enabled envs.
+dp_edge_sites() {
+  local env
+  for env in $ENABLED_ENVS; do
+    echo "$(dp_ev "$env" FRONTEND_HOST) 127.0.0.1:$(dp_ev "$env" FRONTEND_PORT)"
+    echo "$(dp_ev "$env" API_HOST) 127.0.0.1:$(dp_ev "$env" API_PORT)"
+  done
+  if [[ -n "${MEDIA_HOST:-}" && "$SERVICES_MODE" == "bundled" ]]; then
+    echo "${MEDIA_HOST} 127.0.0.1:${MINIO_PORT}"
+  fi
+}
+
+dp_edge_need_nginx() { [[ "$EDGE_MODE" != "panel" || "$RUNTIME" == "host" ]]; }
+
+dp_edge_prereqs() {
+  dp_edge_need_nginx || return 0
+  command -v nginx >/dev/null 2>&1 || dp_pkg_install nginx
+  command -v envsubst >/dev/null 2>&1 || dp_pkg_install gettext-base
+  [[ "$EDGE_MODE" == "certbot" ]] && ! command -v certbot >/dev/null 2>&1 && dp_pkg_install certbot
+  sudo mkdir -p "$DP_NGINX_AVAIL" "$DP_NGINX_ENABLED" /var/www/certbot
+}
+
+_dp_site_name() { printf '%s--%s.conf' "$PROJECT_SLUG" "$1"; }
+
+_dp_enable() {
+  local name="$1"
+  sudo ln -sfn "${DP_NGINX_AVAIL}/${name}" "${DP_NGINX_ENABLED}/${name}"
+  DP_KEEP_SITES+=" ${name} "
+}
+
+_dp_reload_nginx() { sudo nginx -t && sudo systemctl reload nginx; }
+
+# Remove this project's site files that are no longer wanted.
+_dp_prune_sites() {
+  local f base
+  for f in "${DP_NGINX_AVAIL}/${PROJECT_SLUG}--"*.conf; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f")"
+    [[ "$DP_KEEP_SITES" == *" ${base} "* ]] && continue
+    sudo rm -f "${DP_NGINX_ENABLED}/${base}" "$f"
+    echo "    removed stale site ${base}"
+  done
+}
+
+dp_edge_apply() {
+  local map_var common=() host up name cert key https_suffix=""
+  map_var="$(dp_env_snake "$PROJECT_SLUG")"
+  DP_KEEP_SITES=" "
+  dp_edge_prereqs
+
+  if dp_edge_need_nginx; then
+    _dp_render map.conf.template "/etc/nginx/conf.d/00-${PROJECT_SLUG}-map.conf" SLUG="$PROJECT_SLUG" MAP_VAR="$map_var"
+  fi
+
+  if [[ "$RUNTIME" == "host" ]]; then
+    local env
+    for env in $ENABLED_ENVS; do
+      name="$(_dp_site_name "${env}-api-fpm")"
+      _dp_render api-fpm.conf.template "${DP_NGINX_AVAIL}/${name}" \
+        ENV_NAME="$env" API_PORT="$(dp_ev "$env" API_PORT)" FPM_SOCK="$FPM_SOCK" \
+        BACKEND_PUBLIC="$(dp_env_dir "$env")/backend-run/public" MAX_BODY="${MAX_BODY:-64m}"
+      _dp_enable "$name"
+    done
+  fi
+
+  if [[ "$EDGE_MODE" == "panel" ]]; then
+    _dp_prune_sites
+    dp_edge_need_nginx && _dp_reload_nginx
+    dp_section "Point your panel's reverse proxies at these upstreams (HTTPS terminated by the panel)"
+    dp_edge_sites | awk '{ printf "  %-40s → http://%s\n", $1, $2 }'
+    return 0
+  fi
+
+  [[ "${PUBLIC_HTTPS_PORT:-443}" != "443" ]] && https_suffix=":${PUBLIC_HTTPS_PORT}"
+  common=(HTTP_PORT="${PUBLIC_HTTP_PORT:-80}" HTTPS_PORT="${PUBLIC_HTTPS_PORT:-443}" HTTPS_SUFFIX="$https_suffix"
+    MAP_VAR="$map_var" MAX_BODY="${MAX_BODY:-64m}")
+
+  while read -r host up; do
+    name="$(_dp_site_name "$host")"
+    if [[ "$EDGE_MODE" == "certbot" ]]; then
+      cert="/etc/letsencrypt/live/${host}/fullchain.pem"; key="/etc/letsencrypt/live/${host}/privkey.pem"
+      if ! sudo test -f "$cert"; then
+        _dp_render acme.conf.template "${DP_NGINX_AVAIL}/${name}" SITE_HOST="$host" HTTP_PORT="${PUBLIC_HTTP_PORT:-80}"
+        _dp_enable "$name"; _dp_reload_nginx
+        dp_info "Requesting certificate for ${host}"
+        if ! sudo certbot certonly --webroot -w /var/www/certbot -d "$host" --cert-name "$host" \
+          --email "$CERTBOT_EMAIL" --agree-tos --non-interactive --keep-until-expiring; then
+          dp_warn "certbot failed for ${host} (DNS must point here and port ${PUBLIC_HTTP_PORT:-80} be reachable). Site left in ACME-only mode; re-run: setup.sh edge"
+          continue
+        fi
+      fi
+    else
+      cert="$TLS_CERT"; key="$TLS_KEY"
+      sudo test -f "$cert" && sudo test -f "$key" || dp_die "TLS cert/key not found: ${cert} / ${key}"
+    fi
+    _dp_render site.conf.template "${DP_NGINX_AVAIL}/${name}" SITE_HOST="$host" UPSTREAM="$up" CERT="$cert" KEY="$key" "${common[@]}"
+    _dp_enable "$name"
+  done < <(dp_edge_sites)
+
+  if [[ "$EDGE_MODE" == "certbot" ]]; then
+    sudo mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+    printf '#!/bin/sh\nnginx -t && systemctl reload nginx\n' | sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh >/dev/null
+    sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+  fi
+  _dp_prune_sites
+  _dp_reload_nginx
+  dp_ok "Edge configured (${EDGE_MODE})"
+}

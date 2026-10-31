@@ -1,0 +1,21 @@
+[Unit]
+Description=__SLUG__ frontend (__ENV__)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__RUN__
+Environment=NODE_ENV=production
+Environment=PORT=__PORT__
+Environment=HOSTNAME=127.0.0.1
+ExecStart=__NODE__ __RUN__/frontend/server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

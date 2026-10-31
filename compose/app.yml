@@ -1,0 +1,73 @@
+# Per-env app stack for RUNTIME=docker. Driven by deploy/deploy.sh:
+#   PROJECT_SLUG, DP_ENV, DP_NETWORK, ENV_FILE, BACKEND_IMAGE, FRONTEND_IMAGE,
+#   API_PORT, FRONTEND_PORT (loopback; the edge/panel proxies to them)
+
+name: ${PROJECT_SLUG:?}-${DP_ENV:?}
+
+x-backend: &backend
+  image: ${BACKEND_IMAGE:?}
+  restart: unless-stopped
+  env_file:
+    - ${ENV_FILE:?}
+  environment:
+    CACHE_CONFIG: "1"
+    RUN_MIGRATIONS: "0"
+  volumes:
+    - app_storage:/var/www/html/storage
+  networks: [data]
+  logging: &logging
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  app:
+    <<: *backend
+    healthcheck:
+      test: ["CMD-SHELL", "php -v >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy: { resources: { limits: { memory: "${APP_MEM_LIMIT:-512M}" } } }
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ../nginx/api.conf:/etc/nginx/conf.d/default.conf:ro
+      - app_storage:/var/www/html/storage:ro
+    ports:
+      - "127.0.0.1:${API_PORT:?}:80"
+    networks: [data]
+    depends_on: [app]
+    logging: *logging
+    deploy: { resources: { limits: { memory: "${NGINX_MEM_LIMIT:-128M}" } } }
+
+  horizon:
+    <<: *backend
+    command: php artisan horizon
+    stop_grace_period: 60s
+    depends_on: [app]
+    deploy: { resources: { limits: { memory: "${HORIZON_MEM_LIMIT:-512M}" } } }
+
+  scheduler:
+    <<: *backend
+    command: php artisan schedule:work
+    depends_on: [app]
+    deploy: { resources: { limits: { memory: "${SCHEDULER_MEM_LIMIT:-256M}" } } }
+
+  frontend:
+    image: ${FRONTEND_IMAGE:?}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:?}:3000"
+    networks: [data]
+    logging: *logging
+    deploy: { resources: { limits: { memory: "${FRONTEND_MEM_LIMIT:-512M}" } } }
+
+networks:
+  data:
+    external: true
+    name: ${DP_NETWORK:?}
+
+volumes:
+  app_storage:

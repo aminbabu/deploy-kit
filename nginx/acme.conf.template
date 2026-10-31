@@ -1,0 +1,8 @@
+# ${SITE_HOST}: ACME HTTP-01 only, until a certificate exists (deploy/lib/edge.sh)
+server {
+    listen ${HTTP_PORT};
+    listen [::]:${HTTP_PORT};
+    server_name ${SITE_HOST};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 503; }
+}

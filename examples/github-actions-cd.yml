@@ -1,0 +1,79 @@
+name: CD
+
+# Example CD workflow — copy to .github/workflows/cd.yml in your app repo and set
+# DEPLOY_SLUG to the PROJECT_SLUG you chose in setup.sh.
+#
+# App secrets never leave the server. GitHub only triggers a deploy:
+# SSH → reset the checkout to the pushed branch → deploy/deploy.sh <env>
+# (deploy.sh reads the project state written by deploy/setup.sh on the server).
+#
+# Only production (main) is deployed for now. To add staging/dev later: run
+# `deploy/setup.sh add-env <env>` on the server, then add the branch below,
+# to the case mapping, and to `options`.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.event.inputs.environment || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      # secrets.* is not allowed in step `if:`; expose presence via job env.
+      HAS_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST != '' }}
+    steps:
+      - id: map
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ inputs.environment }}"
+          else
+            case "${{ github.ref_name }}" in
+              main) ENV=production ;;
+              *) echo "Branch ${{ github.ref_name }} is not deployed"; exit 1 ;;
+            esac
+          fi
+          echo "env_name=${ENV}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy over SSH
+        if: env.HAS_SSH_HOST == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          REPO_PATH: ${{ secrets.DEPLOY_REPO_PATH }}
+          DEPLOY_SLUG: myapp
+          BRANCH: ${{ github.ref_name }}
+          ENV_NAME: ${{ steps.map.outputs.env_name }}
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: REPO_PATH,BRANCH,ENV_NAME,DEPLOY_SLUG
+          command_timeout: 45m
+          script: |
+            set -euo pipefail
+            # Checkout path: secret, else the pointer written by deploy/setup.sh.
+            if [ -z "${REPO_PATH:-}" ] && [ -f "${HOME}/.${DEPLOY_SLUG}.deploy" ]; then
+              REPO_PATH="$(sed -n 's/^REPO_PATH=//p' "${HOME}/.${DEPLOY_SLUG}.deploy")"
+            fi
+            [ -n "${REPO_PATH:-}" ] || { echo "Set DEPLOY_REPO_PATH or run deploy/setup.sh on the server"; exit 1; }
+            cd "$REPO_PATH"
+            # Hard reset (not pull --ff-only): survives force-pushes and stray server edits.
+            git fetch --prune origin "$BRANCH"
+            git checkout -f -B "$BRANCH" "origin/$BRANCH"
+            bash deploy/deploy.sh "$ENV_NAME"
+
+      - name: Notice when SSH host is not configured
+        if: env.HAS_SSH_HOST != 'true'
+        run: echo "DEPLOY_SSH_HOST secret is not configured. Skipping automated deployment."
