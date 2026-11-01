@@ -184,6 +184,10 @@ dp_ask_project() {
   fi
   dp_ask APP_HOME "App home (state, env files, backups)" "${HOME}/${PROJECT_SLUG}" dp_v_path
   APP_HOME="$(dp_expand_path "$APP_HOME")"
+  # Each project keeps its state and secrets in its own home; never write into another's.
+  local owner; owner="$(dp_env_value "${APP_HOME}/project.env" PROJECT_SLUG 2>/dev/null || true)"
+  [[ -z "$owner" || "$owner" == "$PROJECT_SLUG" ]] \
+    || dp_die "${APP_HOME} belongs to project '${owner}'. Use a separate app home for '${PROJECT_SLUG}' (default ${HOME}/${PROJECT_SLUG})."
   if [[ -f "${APP_HOME}/project.env" && -z "$(dp_saved PROJECT_SLUG)" ]]; then dp_state_load_saved; fi
   REPO_PATH="$REPO_ROOT"
   remote="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
