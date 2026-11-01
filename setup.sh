@@ -743,7 +743,7 @@ dp_artisan() { # env cmd...
     API_PORT="$(dp_ev "$env" API_PORT)" FRONTEND_PORT="$(dp_ev "$env" FRONTEND_PORT)" \
       docker compose -f "${DP_ROOT}/compose/app.yml" exec -T app php artisan "$@"
   else
-    (cd "$(dp_env_dir "$env")/backend-run" && php artisan "$@")
+    (cd "$(dp_env_dir "$env")/backend-run" && "$(dp_php_bin)" artisan "$@")
   fi
 }
 
