@@ -94,25 +94,64 @@ The other questions:
 
 ## Everyday commands
 
-Run these on the server, in your app's folder.
+Run these on the server, in your app's checkout (e.g. `cd ~/shop/repo`). Replace `production` with any environment you set up (`staging`, `dev`, …).
+
+### Deploy
 
 | I want to… | Command |
 |---|---|
 | **Deploy the latest code** | `deploy/deploy.sh production --pull` |
+| Deploy what's already checked out | `deploy/deploy.sh production` |
+| Deploy without the pre-migration database backup | `deploy/deploy.sh production --no-backup` |
 | Undo the last deploy | `deploy/deploy.sh production --rollback` *(docker only)* |
+| See past deploys | `tail ~/shop/shared/deploy.log` |
+
+### Check and troubleshoot
+
+| I want to… | Command |
+|---|---|
 | Check everything is running | `deploy/setup.sh status` |
 | Find out what's wrong | `deploy/setup.sh doctor` |
+| See the app's services *(native)* | `systemctl --user status 'shop-*'` |
+| Follow queue / Horizon logs *(native)* | `journalctl --user -u shop-worker-production -f` |
+| Restart the frontend, worker and scheduler *(native)* | `systemctl --user restart 'shop-*-production'` |
+| Laravel's own log | `tail -f ~/shop/production/storage/logs/laravel-*.log` |
+
+### Change settings
+
+| I want to… | Command |
+|---|---|
 | Change email / SMS / payment / login keys | `deploy/setup.sh vars production` |
 | Change a domain | `deploy/setup.sh domains` |
-| Change how something runs (e.g. Redis → native) | `deploy/setup.sh components` |
+| Change how something runs (e.g. Redis → native, PHP version) | `deploy/setup.sh components` |
+| Re-apply nginx, certificates, the PHP-FPM pool, or print the panel's proxy targets | `deploy/setup.sh edge` |
+| Restart the database / Redis / MinIO and re-check their users and buckets | `deploy/setup.sh services` |
 | Add or remove an environment | `deploy/setup.sh add-env staging` / `remove-env staging` |
+| Firewall, swap, automatic security updates | `deploy/setup.sh harden` |
+
+### Database and passwords
+
+| I want to… | Command |
+|---|---|
 | Back up / restore the database | `deploy/setup.sh backup production` / `restore production <file>` |
 | Run migrations | `deploy/setup.sh migrate production` |
+| Create the first admin user | `deploy/setup.sh seed-admin production` (set `SEED_ADMIN_CLASS` in `~/shop/project.env`) |
 | Show database / Redis / MinIO passwords | `deploy/setup.sh credentials` |
-| Change all generated passwords | `deploy/setup.sh rotate-secrets` |
-| Firewall, swap, auto security updates | `deploy/setup.sh harden` |
+| Change all generated passwords | `deploy/setup.sh rotate-secrets` (a Redis shared with other apps is left alone) |
+| Save my answers to reuse on another server | `deploy/setup.sh export-answers` (no passwords) |
 
-Running `deploy/setup.sh` again is always safe: it remembers your answers, so pressing Enter changes nothing.
+### Update the kit
+
+The kit lives inside your app, so updating it is a normal commit. On your computer, in the app:
+
+```bash
+git subtree pull --prefix deploy git@github.com:aminbabu/deploy-kit.git main --squash
+git push
+```
+
+Then on the server: `git pull` (or let CI deploy it). **Update before running `deploy/setup.sh` on a server that hosts other apps**, so you have the latest safety checks.
+
+Running `deploy/setup.sh` again is safe: it remembers this app's answers, so pressing Enter changes nothing. Each app keeps its own settings, and setup refuses to use another app's folder.
 
 ---
 
