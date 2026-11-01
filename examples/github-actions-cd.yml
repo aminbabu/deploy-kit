@@ -29,7 +29,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gate deploys on your test workflows: add `workflow_call:` to their `on:` and
+  # uncomment these jobs and `needs:` below.
+  # backend:
+  #   uses: ./.github/workflows/backend-ci.yml
+  # frontend:
+  #   uses: ./.github/workflows/frontend-ci.yml
+
   deploy:
+    # needs: [backend, frontend]
     runs-on: ubuntu-latest
     env:
       # secrets.* is not allowed in step `if:`; expose presence via job env.
@@ -75,6 +83,8 @@ jobs:
             git checkout -f -B "$BRANCH" "origin/$BRANCH"
             bash deploy/deploy.sh "$ENV_NAME"
 
-      - name: Notice when SSH host is not configured
+      - name: Fail when SSH secrets are missing
         if: env.HAS_SSH_HOST != 'true'
-        run: echo "DEPLOY_SSH_HOST secret is not configured. Skipping automated deployment."
+        run: |
+          echo "::error::DEPLOY_SSH_HOST is not set, so nothing was deployed. Add DEPLOY_SSH_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_KEY (and DEPLOY_SSH_PORT if not 22)."
+          exit 1
