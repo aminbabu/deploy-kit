@@ -236,20 +236,8 @@ dp_ask_app() {
       dp_ask FRONTEND_CONTEXT "Frontend build context" "$ctx" dp_v_reldir
     fi
   else
-    local sock svc
-    sock="$(ls /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -1 || true)"
-    dp_ask_required FPM_SOCK "PHP-FPM socket path or host:port (CloudPanel pools use 127.0.0.1:<port>)" "${sock:-/run/php/php-fpm.sock}"
-    svc=""
-    if [[ "$FPM_SOCK" == /* ]]; then
-      svc="$(basename "${FPM_SOCK%.sock}")"; [[ "$svc" =~ ^php[0-9]+\.[0-9]+-fpm$ ]] || svc=""
-    fi
-    # Pool on a TCP port or custom socket name: find the pool file that listens there.
-    if [[ -z "$svc" ]]; then
-      local pool; pool="$(sudo grep -lsE "^[[:space:]]*listen[[:space:]]*=[[:space:]]*${FPM_SOCK//./\\.}[[:space:]]*$" /etc/php/*/fpm/pool.d/*.conf | head -1 || true)"
-      [[ "$pool" =~ ^/etc/php/([0-9]+\.[0-9]+)/ ]] && svc="php${BASH_REMATCH[1]}-fpm"
-    fi
-    [[ -n "$svc" ]] || svc="php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)-fpm"
-    dp_ask FPM_SERVICE "PHP-FPM systemd service (reloaded after deploys)" "$svc"
+    # The kit runs its own PHP-FPM pool for the app (as this user), so only the version is asked.
+    dp_ask PHP_VERSION "PHP version for the app (a dedicated PHP-FPM pool is created)" "$(dp_php_default_ver)" dp_v_php_ver
     if dp_fe_on; then
       _dp_fe_cmds
       dp_ask FRONTEND_INSTALL_CMD "Frontend install command (run from the repo root)" "$FE_INSTALL_DEF"
@@ -382,7 +370,7 @@ dp_ask_services() {
 }
 
 DP_STATE_KEYS=(PROJECT_SLUG APP_HOME REPO_URL REPO_PATH RUNTIME EDGE_MODE PUBLIC_HTTP_PORT PUBLIC_HTTPS_PORT
-  CERTBOT_EMAIL TLS_CERT TLS_KEY FPM_SOCK FPM_SERVICE ROOT_DOMAIN ENABLED_ENVS MEDIA_HOST
+  CERTBOT_EMAIL TLS_CERT TLS_KEY PHP_VERSION FPM_SOCK FPM_SERVICE ROOT_DOMAIN ENABLED_ENVS MEDIA_HOST
   BACKEND_DIR FRONTEND_ENABLED FRONTEND_DIR API_PREFIX BACKEND_DOCKERFILE BACKEND_CONTEXT FRONTEND_DOCKERFILE FRONTEND_CONTEXT
   FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD
   DB_ENGINE DB_MODE REDIS_MODE STORAGE_MODE QUEUE_WORKER SCHEDULER_ENABLED
@@ -602,7 +590,7 @@ cmd_components() {
   local old="${DB_ENGINE}/${DB_MODE} redis:${REDIS_MODE} storage:${STORAGE_MODE} runtime:${RUNTIME}" env
   # Re-ask with the current values as defaults (saved state pre-fills S_*).
   unset BACKEND_DIR FRONTEND_ENABLED FRONTEND_DIR API_PREFIX RUNTIME BACKEND_DOCKERFILE BACKEND_CONTEXT \
-    FRONTEND_DOCKERFILE FRONTEND_CONTEXT FPM_SOCK FPM_SERVICE FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD \
+    FRONTEND_DOCKERFILE FRONTEND_CONTEXT PHP_VERSION FPM_SOCK FPM_SERVICE FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD \
     DB_ENGINE DB_MODE REDIS_MODE STORAGE_MODE QUEUE_WORKER SCHEDULER_ENABLED MEDIA_HOST
   dp_ask_app
   dp_ask_components

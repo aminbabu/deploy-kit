@@ -137,8 +137,21 @@ dp_svc_host() {
     *) echo "${3:-}" ;;
   esac
 }
-# PHP version of the FPM pool (from FPM_SERVICE, e.g. php8.4-fpm → 8.4); empty = default php.
-dp_php_ver() { [[ "${FPM_SERVICE:-}" =~ ^php([0-9]+\.[0-9]+)-fpm$ ]] && echo "${BASH_REMATCH[1]}" || true; }
+# PHP version of the app's FPM pool: PHP_VERSION, else from an older FPM_SERVICE (php8.4-fpm → 8.4).
+dp_php_ver() {
+  if [[ -n "${PHP_VERSION:-}" ]]; then echo "$PHP_VERSION"
+  elif [[ "${FPM_SERVICE:-}" =~ ^php([0-9]+\.[0-9]+)-fpm$ ]]; then echo "${BASH_REMATCH[1]}"; fi
+  return 0
+}
+# Default for the wizard: saved choice, newest PHP-FPM on the host, else the distro's.
+dp_php_default_ver() {
+  local v=""
+  [[ "${S_FPM_SERVICE:-}" =~ ^php([0-9]+\.[0-9]+)-fpm$ ]] && { echo "${BASH_REMATCH[1]}"; return 0; }
+  v="$(ls -d /etc/php/*/fpm 2>/dev/null | sed -E 's#^/etc/php/([^/]+)/fpm$#\1#' | sort -V | tail -1 || true)"
+  [[ -n "$v" ]] || v="$(apt-cache depends php-fpm 2>/dev/null | grep -oE 'php[0-9]+\.[0-9]+-fpm' | head -1 | sed -E 's/^php|-fpm$//g' || true)"
+  echo "${v:-8.3}"
+}
+dp_v_php_ver() { [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "use a version like 8.3"; return 1; }; }
 # CLI binary matching that pool, so artisan/composer/workers run the same PHP as the site.
 dp_php_bin() {
   local v; v="$(dp_php_ver)"

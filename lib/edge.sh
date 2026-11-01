@@ -68,6 +68,7 @@ dp_edge_apply() {
   fi
 
   if [[ "$RUNTIME" == "native" ]]; then
+    dp_native_fpm_pool
     local env
     for env in $ENABLED_ENVS; do
       name="$(_dp_site_name "${env}-api-fpm")"

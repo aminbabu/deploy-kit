@@ -115,10 +115,53 @@ dp_native_minio() {
   dp_ok "MinIO (native) on ${addr}:${MINIO_PORT}, console 127.0.0.1:${MINIO_CONSOLE_PORT}"
 }
 
+# Dedicated PHP-FPM pool for the app, running as the deploy user: PHP can read the
+# releases in $HOME and write storage/ with no ACLs or chmod, like the CLI, Horizon and
+# the scheduler. nginx reaches it through a socket owned by nginx's user. Older setups
+# that pointed at a shared/panel pool are moved onto it.
+dp_native_fpm_pool() {
+  local v svc conf sock tmp fpm_bin web_user web_group u g backup=""
+  v="$(dp_php_ver)"; [[ -n "$v" ]] || v="$(dp_php_default_ver)"
+  svc="php${v}-fpm"; sock="/run/php/php${v}-${PROJECT_SLUG}-fpm.sock"
+  conf="/etc/php/${v}/fpm/pool.d/dk-${PROJECT_SLUG}.conf"
+  fpm_bin="$(command -v "php-fpm${v}" || echo "/usr/sbin/php-fpm${v}")"
+  sudo test -x "$fpm_bin" || dp_die "PHP-FPM ${v} not found (${fpm_bin}). Install php${v}-fpm or pick another PHP version: deploy/setup.sh components"
+  u="$(id -un)"; g="$(id -gn)"
+  web_user="$(sudo nginx -T 2>/dev/null | awk '$1 == "user" { sub(/;$/, "", $2); print $2; exit }' || true)"
+  id "${web_user:-x}" >/dev/null 2>&1 || web_user=www-data
+  web_group="$(id -gn "$web_user")"
+  tmp="$(mktemp)"
+  printf '%s\n' \
+    "; Managed by deploy-kit for ${PROJECT_SLUG}; changes are overwritten by setup.sh." \
+    "[dk-${PROJECT_SLUG}]" \
+    "user = ${u}" "group = ${g}" \
+    "listen = ${sock}" "listen.owner = ${web_user}" "listen.group = ${web_group}" "listen.mode = 0660" \
+    "pm = dynamic" "pm.max_children = ${FPM_MAX_CHILDREN:-10}" "pm.start_servers = 2" \
+    "pm.min_spare_servers = 1" "pm.max_spare_servers = 4" "pm.max_requests = 500" >"$tmp"
+  if ! sudo cmp -s "$tmp" "$conf"; then
+    sudo test -f "$conf" && { backup="$(mktemp)"; sudo cat "$conf" >"$backup"; }
+    sudo install -m 644 "$tmp" "$conf"
+    # Never leave a broken pool behind: it would stop PHP for every site on the host.
+    if ! sudo "$fpm_bin" -t >/dev/null 2>&1; then
+      if [[ -n "$backup" ]]; then sudo install -m 644 "$backup" "$conf"; else sudo rm -f "$conf"; fi
+      rm -f "$tmp" "$backup"
+      dp_die "PHP-FPM rejected the pool for ${PROJECT_SLUG}; see: sudo ${fpm_bin} -t"
+    fi
+    if systemctl is-active --quiet "$svc"; then sudo systemctl reload "$svc"; else sudo systemctl enable --now "$svc"; fi
+  fi
+  rm -f "$tmp" "$backup"
+  local i; for i in $(seq 1 15); do sudo test -S "$sock" && break; sleep 1; done
+  sudo test -S "$sock" || dp_die "PHP-FPM pool socket ${sock} did not appear; see: journalctl -u ${svc}"
+  PHP_VERSION="$v"; FPM_SERVICE="$svc"; FPM_SOCK="$sock"
+  dp_state_set PHP_VERSION "$v"; dp_state_set FPM_SERVICE "$svc"; dp_state_set FPM_SOCK "$sock"
+  dp_ok "PHP-FPM pool dk-${PROJECT_SLUG} (PHP ${v}, user ${u}) on ${sock}"
+}
+
 # PHP-FPM + Composer (+ Node when a frontend is deployed) for RUNTIME=native.
 dp_native_app_prereqs() {
   local pkgs=() db_ext php_bin p
   # Versioned names (php8.4-redis) when the pool pins a version, else the distro default.
+  [[ -n "$(dp_php_ver)" ]] || PHP_VERSION="$(dp_php_default_ver)"
   p="php$(dp_php_ver)-"
   db_ext="${p}$([[ $DB_ENGINE == mysql ]] && echo mysql || echo pgsql)"
   php_bin="$(dp_php_bin || true)"
@@ -134,10 +177,11 @@ dp_native_app_prereqs() {
       pkg="${ext#*:}"; ext="${ext%%:*}"; [[ "$pkg" == "$db_ext" ]] || pkg="${p}${pkg}"
       grep -qx "$ext" <<<"$mods" || pkgs+=("$pkg")
     done
-    [[ "$FPM_SOCK" == /* && ! -S "$FPM_SOCK" ]] && ! systemctl cat "${FPM_SERVICE:-php-fpm}" >/dev/null 2>&1 && pkgs+=("${p}fpm")
+    command -v "php-fpm$(dp_php_ver)" >/dev/null 2>&1 || [[ -x "/usr/sbin/php-fpm$(dp_php_ver)" ]] || pkgs+=("${p}fpm")
   fi
   command -v unzip >/dev/null 2>&1 || pkgs+=(unzip)
   (( ${#pkgs[@]} )) && dp_pkg_install "${pkgs[@]}"
+  dp_native_fpm_pool
   if ! command -v composer >/dev/null 2>&1; then
     dp_yes "Composer is missing. Install it to /usr/local/bin/composer?" y || dp_die "composer is required for RUNTIME=native"
     curl -fsSL https://getcomposer.org/installer | php -- --quiet --install-dir=/tmp --filename=composer
