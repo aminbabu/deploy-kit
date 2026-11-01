@@ -155,6 +155,30 @@ dp_native_fpm_pool() {
   PHP_VERSION="$v"; FPM_SERVICE="$svc"; FPM_SOCK="$sock"
   dp_state_set PHP_VERSION "$v"; dp_state_set FPM_SERVICE "$svc"; dp_state_set FPM_SOCK "$sock"
   dp_ok "PHP-FPM pool dk-${PROJECT_SLUG} (PHP ${v}, user ${u}) on ${sock}"
+  dp_native_sudoers
+}
+
+# The one root action a routine deploy needs: reloading PHP-FPM (clears OPcache).
+# Allow exactly that command without a password so CI deploys never prompt.
+dp_native_sudoers() {
+  [[ -n "${FPM_SERVICE:-}" ]] || return 0
+  local u f tmp ctl
+  u="$(id -un)"; f="/etc/sudoers.d/dk-${PROJECT_SLUG}"
+  [[ "$u" == root ]] && return 0
+  ctl="$(command -v systemctl)"
+  tmp="$(mktemp)"
+  printf '# Managed by deploy-kit for %s: lets deploys (incl. CI) reload PHP-FPM.\n%s ALL=(root) NOPASSWD: %s reload %s\n' \
+    "$PROJECT_SLUG" "$u" "$ctl" "$FPM_SERVICE" >"$tmp"
+  if ! sudo cmp -s "$tmp" "$f"; then
+    # Validate first: a broken sudoers file can lock sudo out entirely.
+    if sudo visudo -cqf "$tmp"; then
+      sudo install -m 440 -o root -g root "$tmp" "$f"
+      dp_ok "sudoers: ${u} may run '${ctl##*/} reload ${FPM_SERVICE}' without a password (${f})"
+    else
+      dp_warn "Could not validate the sudoers rule; PHP-FPM reloads from CI will be skipped."
+    fi
+  fi
+  rm -f "$tmp"
 }
 
 # PHP-FPM + Composer (+ Node when a frontend is deployed) for RUNTIME=native.

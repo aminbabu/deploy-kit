@@ -14,7 +14,7 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 DP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${DP_ROOT}/.." && pwd)"
-for f in ui envfile state system env-urls services backend-run; do
+for f in ui envfile state system env-urls services backend-run native; do
   # shellcheck source=/dev/null
   source "${DP_ROOT}/lib/${f}.sh"
 done
@@ -211,9 +211,13 @@ _dp_unit() {
 # sudo (CI) it is skipped and OPcache picks up changed files on its own revalidation.
 _dp_reload_fpm() {
   [[ -n "${FPM_SERVICE:-}" ]] || return 0
-  if [[ -t 2 ]]; then sudo systemctl reload "$FPM_SERVICE"; return; fi
   sudo -n systemctl reload "$FPM_SERVICE" 2>/dev/null && return 0
-  dp_warn "Skipped 'systemctl reload ${FPM_SERVICE}' (needs sudo). For CI, add with visudo: $(id -un) ALL=(root) NOPASSWD: /usr/bin/systemctl reload ${FPM_SERVICE}"
+  if [[ -t 2 ]]; then
+    # Manual deploy on a setup from before the kit managed this: install the rule now.
+    dp_native_sudoers
+    sudo systemctl reload "$FPM_SERVICE"; return
+  fi
+  dp_warn "Skipped 'systemctl reload ${FPM_SERVICE}' (no passwordless sudo yet). Run one deploy by hand, or: deploy/setup.sh edge"
 }
 
 deploy_native() {
