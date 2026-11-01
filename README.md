@@ -123,6 +123,7 @@ Running `deploy/setup.sh` again is always safe: it remembers your answers, so pr
    - `DEPLOY_SSH_HOST`: your server's address
    - `DEPLOY_SSH_USER`: the server user
    - `DEPLOY_SSH_KEY`: a private SSH key that can log in as that user
+   - `DEPLOY_SSH_PORT` *(optional)*: the SSH port, if it isn't 22
 
 Each push to `main` now deploys production. Your app's passwords stay on the server.
 

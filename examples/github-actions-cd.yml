@@ -57,6 +57,7 @@ jobs:
           ENV_NAME: ${{ steps.map.outputs.env_name }}
         with:
           host: ${{ secrets.DEPLOY_SSH_HOST }}
+          port: ${{ secrets.DEPLOY_SSH_PORT || 22 }}
           username: ${{ secrets.DEPLOY_SSH_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           envs: REPO_PATH,BRANCH,ENV_NAME,DEPLOY_SLUG
