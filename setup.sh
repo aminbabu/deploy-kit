@@ -667,7 +667,7 @@ cmd_status() {
     local api fe sha
     api="$(dp_ev "$env" API_PORT)"; fe="$(dp_ev "$env" FRONTEND_PORT)"; sha="$(dp_ev "$env" DEPLOYED_SHA)"
     printf '  %-12s release %-14s api:%s %s' "$env" "${sha:-<none>}" "$api" \
-      "$(dp_api_health_path "$(dp_ev "$env" API_HOST)" "$api" >/dev/null && echo up || echo DOWN)"
+      "$(curl -fsS -o /dev/null --max-time 5 -H "Host: $(dp_ev "$env" API_HOST)" "http://127.0.0.1:${api}/up" && echo up || echo DOWN)"
     dp_fe_on && printf '  fe:%s %s' "$fe" "$(curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${fe}/" && echo up || echo DOWN)"
     echo
     if [[ "$RUNTIME" == "docker" ]]; then docker compose -p "${PROJECT_SLUG}-${env}" ps --format '    {{.Service}}: {{.State}} {{.Health}}' 2>/dev/null || true

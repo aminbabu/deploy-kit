@@ -168,16 +168,6 @@ dp_drop_system_unit() {
   sudo rm -f "/etc/systemd/system/${unit}"
   sudo systemctl daemon-reload
 }
-# API health paths tried in order: HEALTH_PATH (project.env) alone if set, else common ones.
-dp_api_health_paths() { echo "${HEALTH_PATH:-/up /api/v1/health /api/health /health}"; }
-# Print the first path that answers 2xx for <host> on loopback <port>; fail if none does.
-dp_api_health_path() {
-  local p
-  for p in $(dp_api_health_paths); do
-    curl -fsS -o /dev/null --max-time 5 -H "Host: $1" "http://127.0.0.1:$2${p}" 2>/dev/null && { echo "$p"; return 0; }
-  done
-  return 1
-}
 dp_svc_port() { [[ "$1" == docker && "$RUNTIME" == docker ]] && echo "$2" || echo "$3"; }
 
 # Address native MinIO listens on (one address only): the bridge gateway when
