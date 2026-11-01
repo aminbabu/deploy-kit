@@ -6,6 +6,8 @@
 #   init                  full wizard (default): app, components, envs, domains, variables, services, edge, deploy
 #   add-env <env>         enable another environment (asks its domains + variables)
 #   remove-env <env>      stop and disable an environment (data and backups are kept)
+#   uninstall [--purge]   remove this project from the server (services, nginx sites, PHP-FPM pool,
+#                         sudoers rule); --purge also deletes its app home (databases are kept)
 #   vars <env>            edit the catalog variables of an env (mail, SMS, payments, OAuth, …)
 #   domains               change frontend/API/media hosts, then re-sync envs + edge
 #   components            change app paths/runtime and each component's mode (docker/native/external)
@@ -39,7 +41,8 @@ while (( $# )); do
     --skip-edge) SKIP_EDGE=1; shift ;;
     --skip-deploy) SKIP_DEPLOY=1; shift ;;
     --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    --purge) ARGS+=("--purge"); shift ;;   # uninstall
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     -*) dp_die "unknown option $1" ;;
     *) if [[ "$CMD" == "init" && ${#ARGS[@]} -eq 0 && "$1" =~ ^[a-z-]+$ && -z "${DP_CMD_SET:-}" ]]; then CMD="$1"; DP_CMD_SET=1; else ARGS+=("$1"); fi; shift ;;
   esac
@@ -571,6 +574,30 @@ dp_stop_env_app() {
   dp_userctl daemon-reload 2>/dev/null || true
 }
 
+# Remove everything this project installed on the host. Other projects are untouched.
+cmd_uninstall() {
+  dp_load_existing; dp_reload_state
+  local purge=0 env backup
+  [[ " ${ARGS[*]:-} " == *" --purge "* ]] && purge=1
+  dp_warn "This takes ${PROJECT_SLUG} offline: $(for env in $ENABLED_ENVS; do printf '%s ' "$(dp_ev "$env" API_HOST)"; done)"
+  dp_yes "Uninstall ${PROJECT_SLUG}$( ((purge)) && echo " and DELETE ${APP_HOME}")? (databases are kept)" n || dp_die "Aborted."
+  for env in $ENABLED_ENVS; do dp_stop_env_app "$env"; done
+  # Globs are expanded by root: the deploy user cannot list these directories.
+  sudo bash -c 'shopt -s nullglob; for f in "$1"/"$3"--*.conf "$2"/"$3"--*.conf /etc/nginx/conf.d/00-"$3"-map.conf \
+      /etc/php/*/fpm/pool.d/dk-"$3".conf /etc/sudoers.d/dk-"$3"; do rm -f "$f"; echo "  removed $f"; done' \
+    _ "$DP_NGINX_ENABLED" "$DP_NGINX_AVAIL" "$PROJECT_SLUG"
+  if command -v nginx >/dev/null 2>&1; then sudo nginx -t >/dev/null 2>&1 && sudo systemctl reload nginx; fi
+  [[ -n "${FPM_SERVICE:-}" ]] && systemctl is-active --quiet "$FPM_SERVICE" && sudo systemctl reload "$FPM_SERVICE"
+  rm -f "${HOME}/.${PROJECT_SLUG}.deploy"
+  if ((purge)); then
+    backup="${HOME}/${PROJECT_SLUG}-settings-$(date +%Y%m%d_%H%M%S).tar.gz"
+    tar --exclude='repo' --exclude='*/backend-run' --exclude='*/frontend-run' -czf "$backup" -C "$(dirname "$APP_HOME")" "$(basename "$APP_HOME")" 2>/dev/null \
+      && chmod 600 "$backup" && dp_info "Settings, secrets and DB backups saved to ${backup}"
+    rm -rf "$APP_HOME"
+  fi
+  dp_ok "${PROJECT_SLUG} uninstalled. Still yours to remove if unwanted: databases ($(for env in $ENABLED_ENVS; do printf '%s ' "$(dp_db_name "$env")"; done)), panel sites / DNS, and $( ((purge)) && echo "the settings archive" || echo "${APP_HOME}")."
+}
+
 cmd_remove_env() {
   local env="${ARGS[0]:-}"; [[ -n "$env" ]] || dp_die "usage: setup.sh remove-env <env>"
   dp_load_existing; dp_reload_state
@@ -751,6 +778,7 @@ case "$CMD" in
   init) cmd_init ;;
   add-env) cmd_add_env ;;
   remove-env) cmd_remove_env ;;
+  uninstall) cmd_uninstall ;;
   vars) cmd_vars ;;
   domains) cmd_domains ;;
   components) cmd_components ;;

@@ -5,6 +5,8 @@ server {
     root ${BACKEND_PUBLIC};
     index index.php;
     client_max_body_size ${MAX_BODY};
+    # Lets deploy checks confirm the public domain reaches this app (not another one).
+    add_header X-Served-By "${SLUG}-${ENV_NAME}" always;
 
     location / { try_files $uri $uri/ /index.php?$query_string; }
 

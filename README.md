@@ -127,6 +127,7 @@ Run these on the server, in your app's checkout (e.g. `cd ~/shop/repo`). Replace
 | Re-apply nginx, certificates, the PHP-FPM pool, or print the panel's proxy targets | `deploy/setup.sh edge` |
 | Restart the database / Redis / MinIO and re-check their users and buckets | `deploy/setup.sh services` |
 | Add or remove an environment | `deploy/setup.sh add-env staging` / `remove-env staging` |
+| Remove this app from the server | `deploy/setup.sh uninstall` (add `--purge` to also delete `~/shop`; databases are kept) |
 | Firewall, swap, automatic security updates | `deploy/setup.sh harden` |
 
 ### Database and passwords

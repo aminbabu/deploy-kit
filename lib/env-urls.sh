@@ -127,7 +127,7 @@ dp_write_managed() {
 
 # Live preflight from the frontend origin to the API. Prints and returns 1 on mismatch.
 dp_check_cors() {
-  local env="$1" fe api headers allow
+  local env="$1" fe api headers allow served
   dp_fe_on || return 0
   fe="$(dp_origin "$(dp_ev "$env" FRONTEND_HOST)")"
   api="$(dp_origin "$(dp_ev "$env" API_HOST)")"
@@ -136,10 +136,21 @@ dp_check_cors() {
     -H "Access-Control-Request-Headers: authorization,x-locale" \
     "${api}$([[ ${API_PREFIX:-/api/v1} == none ]] || echo "${API_PREFIX:-/api/v1}")/health" 2>/dev/null || true)"
   allow="$(printf '%s' "$headers" | tr -d '\r' | awk -F': ' 'tolower($1)=="access-control-allow-origin" { print $2; exit }')"
+  served="$(printf '%s' "$headers" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-served-by" { print $2; exit }')"
+  # The native API site names its app: catch a public domain routed to another app/port.
+  if [[ -n "$served" && "$served" != "${PROJECT_SLUG}-${env}" ]]; then
+    dp_warn "${api} is answered by '${served}', not '${PROJECT_SLUG}-${env}'. Point its proxy at http://127.0.0.1:$(dp_ev "$env" API_PORT)."
+    return 1
+  fi
   if [[ "$allow" == "$fe" || "$allow" == "*" ]]; then
     dp_ok "CORS ${fe} → ${api}"
   else
-    dp_warn "CORS preflight ${fe} → ${api} returned Access-Control-Allow-Origin='${allow:-<none>}' (DNS/TLS not ready, or CORS_ALLOWED_ORIGINS wrong)."
+    dp_warn "CORS preflight ${fe} → ${api} returned Access-Control-Allow-Origin='${allow:-<none>}'."
+    if [[ "$RUNTIME" == native && -z "$served" ]]; then
+      dp_warn "The request did not reach this app's API. Check DNS/TLS for $(dp_ev "$env" API_HOST)$([[ $EDGE_MODE == panel ]] && echo ", and that the panel has a reverse-proxy site for it pointing to http://127.0.0.1:$(dp_ev "$env" API_PORT)")."
+    else
+      dp_warn "Check CORS_ALLOWED_ORIGINS / FRONTEND_URL in $(dp_env_file "$env")."
+    fi
     return 1
   fi
 }
