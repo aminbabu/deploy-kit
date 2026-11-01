@@ -298,6 +298,10 @@ dp_claim_known_ports() {
   for k in DB_LOCAL_PORT REDIS_PORT MINIO_PORT MINIO_CONSOLE_PORT; do
     v="${!k:-$(dp_saved "$k")}"; [[ -n "$v" ]] && dp_claim_port "$v"
   done
+  # Ports of other projects on this server, even while their services are stopped.
+  for v in $(dp_other_project_values '[A-Z0-9_]+_(API|FRONTEND)_PORT|DB_LOCAL_PORT|REDIS_PORT|MINIO_PORT|MINIO_CONSOLE_PORT'); do
+    dp_claim_port "$v"
+  done
   return 0
 }
 
@@ -326,6 +330,8 @@ dp_ask_env_hosts() {
   if [[ -z "${!rdb:-}" ]]; then
     local used="" e n=0 k
     for e in $ENABLED_ENVS; do k="$(dp_env_upper "$e")_REDIS_DB"; used+=" ${!k:-$(dp_saved "$k")} "; done
+    # A shared Redis (native/external): skip DB numbers other projects already use.
+    used+=" $(dp_other_project_values '[A-Z0-9_]+_REDIS_DB' | tr '\n' ' ') "
     while [[ "$used" == *" $n "* ]]; do n=$((n + 1)); done
     printf -v "$rdb" '%s' "$n"
   fi
@@ -355,7 +361,13 @@ dp_ask_services() {
   esac
   case "$REDIS_MODE" in
     docker) dp_ask_port REDIS_PORT "Redis loopback port" 6379; dp_ask_secret REDIS_PASSWORD "Redis password" 1 ;;
-    native) REDIS_PORT=6379; dp_ask_secret REDIS_PASSWORD "Redis password (set as requirepass)" 1 ;;
+    native) REDIS_PORT=6379
+      # The host's Redis is shared: keep its current password so other apps keep working.
+      if [[ -z "${REDIS_PASSWORD:-}" && -z "$(dp_saved REDIS_PASSWORD)" ]]; then
+        local cur; cur="$(dp_native_redis_password)"
+        [[ -n "$cur" ]] && { REDIS_PASSWORD="$cur"; dp_info "Using the existing Redis password (shared with other apps on this server)."; }
+      fi
+      dp_ask_secret REDIS_PASSWORD "Redis password (set as requirepass)" 1 ;;
     external)
       dp_ask_required REDIS_HOST "Redis host" "127.0.0.1"
       dp_ask_required REDIS_PORT "Redis port" 6379 dp_v_port
@@ -636,7 +648,11 @@ cmd_rotate_secrets() {
     [[ "$DB_MODE" == docker ]] && { DB_ROOT_PASSWORD="$(dp_gen_secret)"; dp_secret_set DB_ROOT_PASSWORD "$DB_ROOT_PASSWORD"; }
     for env in $ENABLED_ENVS; do k="DB_PASSWORD_$(dp_env_upper "$env")"; printf -v "$k" '%s' "$(dp_gen_secret)"; dp_secret_set "$k" "${!k}"; done
   fi
-  [[ "$REDIS_MODE" =~ ^(docker|native)$ ]] && { REDIS_PASSWORD="$(dp_gen_secret)"; dp_secret_set REDIS_PASSWORD "$REDIS_PASSWORD"; }
+  if [[ "$REDIS_MODE" == native ]] && dp_other_project_values REDIS_MODE | grep -qx native; then
+    dp_warn "Redis password not rotated: the host's Redis is shared with other projects. Rotate it in /etc/redis/redis.conf and update each app's REDIS_PASSWORD."
+  elif [[ "$REDIS_MODE" =~ ^(docker|native)$ ]]; then
+    REDIS_PASSWORD="$(dp_gen_secret)"; dp_secret_set REDIS_PASSWORD "$REDIS_PASSWORD"
+  fi
   dp_minio_on && { MINIO_ROOT_PASSWORD="$(dp_gen_secret)"; dp_secret_set MINIO_ROOT_PASSWORD "$MINIO_ROOT_PASSWORD"; }
   # Docker Postgres keeps its old superuser password until ALTERed (local socket = trust);
   # MariaDB is altered with the old root password; native services are reconfigured.

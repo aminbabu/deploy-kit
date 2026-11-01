@@ -41,6 +41,27 @@ dp_locate_app_home() {
   return 1
 }
 
+# Saved values of keys matching the regex $1 in the *other* kit projects on this host
+# (found through their ~/.<slug>.deploy pointers): ports, Redis DBs and modes they use.
+dp_other_project_values() {
+  local re="$1" p home f
+  shopt -s nullglob
+  for p in "$HOME"/.*.deploy; do
+    home="$(dp_env_value "$p" APP_HOME)"
+    [[ -n "$home" && "$home" != "${APP_HOME:-}" && -f "${home}/project.env" ]] || continue
+    grep -E "^(${re})=" "${home}/project.env" | cut -d= -f2- || true
+  done
+  shopt -u nullglob
+}
+
+# requirepass of the host's Redis (native mode), so a second project reuses it
+# instead of replacing the password the first project depends on.
+dp_native_redis_password() {
+  local conf=/etc/redis/redis.conf
+  sudo test -f "$conf" || conf=/etc/redis.conf
+  sudo awk '$1 == "requirepass" { v = $2; gsub(/^"|"$/, "", v); print v; exit }' "$conf" 2>/dev/null || true
+}
+
 # Map state written by older versions (RUNTIME=host, SERVICES_MODE, MINIO_ENABLED,
 # PG_PORT, POSTGRES_SUPER*) onto the per-component settings. $1 = variable prefix.
 dp_state_compat() {

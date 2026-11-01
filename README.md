@@ -184,6 +184,9 @@ No. Answer **no** to "Clone?" and give the folder's path. Or run `bash deploy/se
 **I use CloudPanel (or another panel).**
 Pick HTTPS → `panel`. At the end the setup lists lines like `api.example.com → http://127.0.0.1:8100`. In CloudPanel, create a **Reverse Proxy** site for each domain with that address, then enable Let's Encrypt in the site's SSL tab. Don't enable the firewall in `harden`, because it would block CloudPanel's admin page (port 8443). Use CloudPanel's own firewall instead.
 
+**Can I host several apps on one server?**
+Yes. Run the installer once per app and give each its own project name. Each app gets its own folder (`~/<project>`), databases, PHP-FPM pool, services and nginx sites. Setup avoids ports and Redis database numbers other apps already use, and reuses the existing password of a shared native Redis instead of changing it.
+
 **My app has no frontend (API only).**
 Answer `n` to "Deploy a Next.js frontend too?".
 
