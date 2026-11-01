@@ -30,7 +30,9 @@ dp_locate_app_home() {
     if [[ -n "$repo" && "$(cd "$rp" 2>/dev/null && pwd -P)" == "$(cd "$repo" && pwd -P)" ]]; then
       APP_HOME="$(dp_env_value "$p" APP_HOME)"; shopt -u nullglob; return 0
     fi
-    found+=("$p")
+    # Only a project whose checkout no longer exists can be "this repo, moved";
+    # a project with a live checkout elsewhere is a different app on the same server.
+    [[ -n "$rp" && -d "$rp" ]] || found+=("$p")
   done
   shopt -u nullglob
   if (( ${#found[@]} == 1 )); then
