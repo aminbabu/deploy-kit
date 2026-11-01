@@ -181,6 +181,24 @@ dp_drop_system_unit() {
   sudo rm -f "/etc/systemd/system/${unit}"
   sudo systemctl daemon-reload
 }
+# Make node (and corepack) available in non-interactive shells (CI over SSH), which don't
+# read the login profile that loads nvm/fnm/volta. Order: the node a previous deploy used
+# (NODE_BIN in project.env), then an nvm install (global /opt/nvm, ~/.nvm, …), then common dirs.
+dp_ensure_node() {
+  command -v node >/dev/null 2>&1 && return 0
+  if [[ -n "${NODE_BIN:-}" && -x "$NODE_BIN" ]]; then PATH="${NODE_BIN%/*}:${PATH}"; return 0; fi
+  local d
+  for d in "${NVM_DIR:-}" "${HOME}/.nvm" /opt/nvm /usr/local/nvm /usr/local/share/nvm; do
+    [[ -n "$d" && -s "${d}/nvm.sh" ]] || continue
+    # nvm.sh is not written for set -eu.
+    set +eu; export NVM_DIR="$d"; . "${d}/nvm.sh" >/dev/null 2>&1; nvm use --silent default >/dev/null 2>&1; set -eu
+    command -v node >/dev/null 2>&1 && return 0
+  done
+  for d in "${HOME}/.volta/bin" "${HOME}/.local/share/fnm/aliases/default/bin" /usr/local/bin /usr/bin; do
+    [[ -x "${d}/node" ]] && { PATH="${d}:${PATH}"; return 0; }
+  done
+  return 1
+}
 dp_svc_port() { [[ "$1" == docker && "$RUNTIME" == docker ]] && echo "$2" || echo "$3"; }
 
 # Address native MinIO listens on (one address only): the bridge gateway when

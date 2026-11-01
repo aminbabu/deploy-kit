@@ -237,7 +237,10 @@ deploy_native() {
   dp_verify_backend_config "$BACKEND_RUN" "$(dp_env_value "$ENV_FILE" APP_URL)" "$(dp_fe_on && dp_env_value "$ENV_FILE" FRONTEND_URL)"
 
   if dp_fe_on; then
-    node_bin="$(command -v node)" || dp_die "node not found"
+    dp_ensure_node || dp_die "node not found. Install Node, or run one deploy by hand so its path is remembered (NODE_BIN)."
+    node_bin="$(command -v node)"
+    # Remember it for non-interactive runs (CI) that don't load nvm.
+    [[ "${NODE_BIN:-}" == "$node_bin" ]] || { dp_state_set NODE_BIN "$node_bin"; NODE_BIN="$node_bin"; }
     local pub=() kv
     while IFS= read -r kv; do pub+=("$kv"); done < <(dp_public_env)
     if [[ "$FRONTEND_INSTALL_CMD$FRONTEND_BUILD_CMD" =~ (pnpm|yarn) ]] && ! command -v "${BASH_REMATCH[1]}" >/dev/null 2>&1; then
