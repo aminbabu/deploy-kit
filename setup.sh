@@ -30,7 +30,7 @@ set -euo pipefail
 
 DP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${DP_ROOT}/.." && pwd)"
-for f in ui envfile state system env-urls services native edge backend-run; do
+for f in ui envfile os state system env-urls services native edge backend-run; do
   # shellcheck source=/dev/null
   source "${DP_ROOT}/lib/${f}.sh"
 done
@@ -500,7 +500,7 @@ dp_ask_services() {
   dp_ask BACKUP_KEEP "Backups to keep per env" 10
 }
 
-DP_STATE_KEYS=(PROJECT_SLUG APP_HOME REPO_URL REPO_PATH RUNTIME EDGE_MODE PUBLIC_HTTP_PORT PUBLIC_HTTPS_PORT
+DP_STATE_KEYS=(OS_FAMILY PROJECT_SLUG APP_HOME REPO_URL REPO_PATH RUNTIME EDGE_MODE PUBLIC_HTTP_PORT PUBLIC_HTTPS_PORT
   CERTBOT_EMAIL TLS_CERT TLS_KEY PHP_VERSION FPM_SOCK FPM_SERVICE ROOT_DOMAIN ENABLED_ENVS MEDIA_HOST
   BACKEND_DIR FRONTEND_ENABLED FRONTEND_DIR API_PREFIX BACKEND_DOCKERFILE BACKEND_CONTEXT FRONTEND_DOCKERFILE FRONTEND_CONTEXT
   FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD HEALTH_PATH POST_DEPLOY_ARTISAN QUEUE_WORK_ARGS NODE_VERSION SEED_ADMIN_CMD FRONTEND_API_MODE
@@ -529,9 +529,9 @@ dp_save_state() {
 
 dp_summary() {
   dp_section "Review"
-  printf '  %-18s %s\n' project "$PROJECT_SLUG" home "$APP_HOME" repo "${REPO_URL:-$REPO_PATH}" \
+  printf '  %-18s %s\n' os "$(dp_os_name) (${OS_FAMILY})" project "$PROJECT_SLUG" home "$APP_HOME" repo "${REPO_URL:-$REPO_PATH}" \
     app "${RUNTIME} runtime, backend ./${BACKEND_DIR}$(dp_fe_on && echo ", frontend ./${FRONTEND_DIR}" || echo ', no frontend')" \
-    database "${DB_ENGINE} (${DB_MODE})" redis "$REDIS_MODE" storage "$STORAGE_MODE" \
+    database "${DB_ENGINE}${DB_VERSION:+ ${DB_VERSION}} (${DB_MODE})" redis "$REDIS_MODE" storage "$STORAGE_MODE" \
     "queue worker" "$QUEUE_WORKER" scheduler "$SCHEDULER_ENABLED" \
     edge "$EDGE_MODE (http ${PUBLIC_HTTP_PORT} / https ${PUBLIC_HTTPS_PORT})" media "${MEDIA_HOST:-<none>}" envs "$ENABLED_ENVS"
   local env
@@ -614,8 +614,8 @@ dp_prepare_host() {
 # Commands
 # ---------------------------------------------------------------------------
 cmd_init() {
-  [[ "$SKIP_PREFLIGHT" == "1" ]] || dp_preflight
-  dp_load_existing
+  dp_load_existing   # first: the saved OS family is the preflight's default
+  if [[ "$SKIP_PREFLIGHT" == "1" ]]; then dp_ask_os; else dp_preflight; fi
   dp_ask_project
   dp_ask_app
   dp_ask_components
@@ -692,9 +692,12 @@ cmd_uninstall() {
   dp_warn "This takes ${PROJECT_SLUG} offline: $(for env in $ENABLED_ENVS; do printf '%s ' "$(dp_ev "$env" API_HOST)"; done)"
   dp_yes "Uninstall ${PROJECT_SLUG}$( ((purge)) && echo " and DELETE ${APP_HOME}")? (databases are kept)" n || dp_die "Aborted."
   for env in $ENABLED_ENVS; do dp_stop_env_app "$env"; done
+  dp_nginx_dirs
   # Globs are expanded by root: the deploy user cannot list these directories.
+  # PHP-FPM pools: Debian (/etc/php/<v>/fpm/pool.d), RHEL (/etc/php-fpm.d), openSUSE (/etc/php8/fpm/php-fpm.d), Arch (/etc/php/php-fpm.d).
   sudo bash -c 'shopt -s nullglob; for f in "$1"/"$3"--*.conf "$2"/"$3"--*.conf /etc/nginx/conf.d/00-"$3"-map.conf \
-      /etc/php/*/fpm/pool.d/dk-"$3".conf /etc/sudoers.d/dk-"$3"; do rm -f "$f"; echo "  removed $f"; done' \
+      /etc/php/*/fpm/pool.d/dk-"$3".conf /etc/php-fpm.d/dk-"$3".conf /etc/php*/fpm/php-fpm.d/dk-"$3".conf \
+      /etc/php/php-fpm.d/dk-"$3".conf /etc/sudoers.d/dk-"$3"; do rm -f "$f"; echo "  removed $f"; done' \
     _ "$DP_NGINX_ENABLED" "$DP_NGINX_AVAIL" "$PROJECT_SLUG"
   if command -v nginx >/dev/null 2>&1; then sudo nginx -t >/dev/null 2>&1 && sudo systemctl reload nginx; fi
   [[ -n "${FPM_SERVICE:-}" ]] && systemctl is-active --quiet "$FPM_SERVICE" && sudo systemctl reload "$FPM_SERVICE"
@@ -815,7 +818,8 @@ cmd_components() {
   unset BACKEND_DIR FRONTEND_ENABLED FRONTEND_DIR API_PREFIX RUNTIME BACKEND_DOCKERFILE BACKEND_CONTEXT \
     FRONTEND_DOCKERFILE FRONTEND_CONTEXT PHP_VERSION FPM_SOCK FPM_SERVICE FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD \
     DB_ENGINE DB_MODE REDIS_MODE STORAGE_MODE QUEUE_WORKER SCHEDULER_ENABLED MEDIA_HOST \
-    HEALTH_PATH POST_DEPLOY_ARTISAN QUEUE_WORK_ARGS NODE_VERSION SEED_ADMIN_CMD FRONTEND_API_MODE DB_VERSION
+    HEALTH_PATH POST_DEPLOY_ARTISAN QUEUE_WORK_ARGS NODE_VERSION SEED_ADMIN_CMD FRONTEND_API_MODE DB_VERSION OS_FAMILY
+  dp_ask_os
   dp_ask_app
   dp_ask_components
   local dbv_old; dbv_old="$(dp_saved DB_VERSION)"
@@ -862,7 +866,7 @@ cmd_rotate_secrets() {
     for env in $ENABLED_ENVS; do k="DB_PASSWORD_$(dp_env_upper "$env")"; printf -v "$k" '%s' "$(dp_gen_secret)"; dp_secret_set "$k" "${!k}"; done
   fi
   if [[ "$REDIS_MODE" == native ]] && dp_other_project_values REDIS_MODE | grep -qx native; then
-    dp_warn "Redis password not rotated: the host's Redis is shared with other projects. Rotate it in /etc/redis/redis.conf and update each app's REDIS_PASSWORD."
+    dp_warn "Redis password not rotated: the host's Redis is shared with other projects. Rotate it in the Redis/Valkey config (e.g. /etc/redis/redis.conf) and update each app's REDIS_PASSWORD."
   elif [[ "$REDIS_MODE" =~ ^(docker|native)$ ]]; then
     REDIS_PASSWORD="$(dp_gen_secret)"; dp_secret_set REDIS_PASSWORD "$REDIS_PASSWORD"
   fi
@@ -901,8 +905,9 @@ cmd_status() {
     printf '    backups: %s\n' "$(ls "${APP_HOME}/backups/${env}" 2>/dev/null | wc -l | xargs)"
   done
   [[ -n "$(dp_services_profiles)" ]] && dp_services_compose ps --format '  docker {{.Service}}: {{.State}} {{.Health}}' 2>/dev/null
-  for u in $([[ $DB_MODE == native ]] && { [[ $DB_ENGINE == mysql ]] && echo mariadb || echo postgresql; }) \
-           $([[ $REDIS_MODE == native ]] && echo redis-server) $([[ "$(dp_minio_mode)" == native ]] && echo "${PROJECT_SLUG}-minio"); do
+  [[ $REDIS_MODE == native ]] && dp_redis_layout
+  for u in $([[ $DB_MODE == native ]] && { [[ $DB_ENGINE == mysql ]] && echo mariadb || dp_pg_service; }) \
+           $([[ $REDIS_MODE == native ]] && echo "$DP_REDIS_SERVICE") $([[ "$(dp_minio_mode)" == native ]] && echo "${PROJECT_SLUG}-minio"); do
     printf '  native %s: %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"
   done
   if [[ "$EDGE_MODE" == "certbot" ]]; then

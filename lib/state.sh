@@ -57,8 +57,8 @@ dp_other_project_values() {
 # requirepass of the host's Redis (native mode), so a second project reuses it
 # instead of replacing the password the first project depends on.
 dp_native_redis_password() {
-  local conf=/etc/redis/redis.conf
-  sudo test -f "$conf" || conf=/etc/redis.conf
+  dp_redis_layout
+  local conf="$DP_REDIS_CONF"
   sudo awk '$1 == "requirepass" { v = $2; gsub(/^"|"$/, "", v); print v; exit }' "$conf" 2>/dev/null || true
 }
 
@@ -85,6 +85,7 @@ dp_state_compat() {
 
 # Defaults for anything older state does not record.
 dp_state_defaults() {
+  : "${OS_FAMILY:=$(dp_os_detect)}"
   : "${RUNTIME:=docker}" "${DB_ENGINE:=pgsql}" "${DB_MODE:=docker}" "${REDIS_MODE:=docker}" "${STORAGE_MODE:=minio-docker}"
   : "${QUEUE_WORKER:=horizon}" "${SCHEDULER_ENABLED:=y}" "${FRONTEND_ENABLED:=y}"
   : "${BACKEND_DIR:=backend}" "${FRONTEND_DIR:=frontend}"
@@ -174,15 +175,22 @@ dp_php_ver() {
 dp_php_default_ver() {
   local v=""
   [[ "${S_FPM_SERVICE:-}" =~ ^php([0-9]+\.[0-9]+)-fpm$ ]] && { echo "${BASH_REMATCH[1]}"; return 0; }
-  v="$(ls -d /etc/php/*/fpm 2>/dev/null | sed -E 's#^/etc/php/([^/]+)/fpm$#\1#' | sort -V | tail -1 || true)"
-  [[ -n "$v" ]] || v="$(apt-cache depends php-fpm 2>/dev/null | grep -oE 'php[0-9]+\.[0-9]+-fpm' | head -1 | sed -E 's/^php|-fpm$//g' || true)"
+  if [[ "$(dp_os)" == debian ]]; then
+    v="$(ls -d /etc/php/*/fpm 2>/dev/null | sed -E 's#^/etc/php/([^/]+)/fpm$#\1#' | sort -V | tail -1 || true)"
+  elif command -v php >/dev/null 2>&1 || command -v php8 >/dev/null 2>&1; then
+    v="$("$(command -v php || command -v php8)" -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;' 2>/dev/null || true)"
+  fi
+  [[ -n "$v" ]] || v="$(dp_php_repo_ver)"
   echo "${v:-8.3}"
 }
 dp_v_php_ver() { [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "use a version like 8.3"; return 1; }; }
 # CLI binary matching that pool, so artisan/composer/workers run the same PHP as the site.
 dp_php_bin() {
   local v; v="$(dp_php_ver)"
-  if [[ -n "$v" ]] && command -v "php${v}" >/dev/null 2>&1; then command -v "php${v}"; else command -v php; fi
+  # Debian-style hosts install side-by-side versions (php8.4); the others have one php.
+  # openSUSE names it by major only (php8).
+  local c; for c in ${v:+"php${v}" "php${v%%.*}"} php; do command -v "$c" >/dev/null 2>&1 && { command -v "$c"; return 0; }; done
+  return 1
 }
 # Native app processes run as systemd *user* services of the deploy user: no sudo per
 # deploy (CI included); "loginctl enable-linger" (once) starts them at boot.

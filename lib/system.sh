@@ -1,25 +1,12 @@
 #!/usr/bin/env bash
 # Host checks, package installs (with consent), ports, opt-in hardening.
 
-dp_pkg_install() {
-  local pkgs=("$@")
-  if [[ "${DP_ASSUME_INSTALL:-0}" != "1" ]] && ! dp_yes "Install missing package(s): ${pkgs[*]}?" y; then
-    dp_die "Required package(s) missing: ${pkgs[*]}"
-  fi
-  if command -v apt-get >/dev/null 2>&1; then
-    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}"
-  elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y "${pkgs[@]}"
-  else
-    dp_die "No supported package manager; install manually: ${pkgs[*]}"
-  fi
-}
+# Package installs are in lib/os.sh (dp_pkg_install), per OS family.
 
 dp_install_docker() {
   command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && return 0
-  dp_yes "Docker (with compose plugin) is required. Install it via get.docker.com?" y || dp_die "Docker is required."
-  curl -fsSL https://get.docker.com | sudo sh
+  dp_yes "Docker (with the compose plugin) is required. Install it for $(dp_os_name)?" y || dp_die "Docker is required."
+  dp_os_install_docker
   sudo usermod -aG docker "$USER" || true
   dp_warn "Added ${USER} to the docker group; if docker commands fail, log out/in and re-run."
 }
@@ -29,7 +16,8 @@ dp_docker() { if docker info >/dev/null 2>&1; then docker "$@"; else sudo docker
 dp_preflight() {
   dp_section "Preflight"
   (( BASH_VERSINFO[0] >= 4 )) || dp_die "bash >= 4 required (found ${BASH_VERSION})."
-  [[ "$(uname -s)" == "Linux" ]] || dp_warn "Not Linux ($(uname -s)); server features (systemd, nginx, apt) may not work."
+  [[ "$(uname -s)" == "Linux" ]] || dp_warn "Not Linux ($(uname -s)); server features (systemd, nginx, packages) may not work."
+  dp_ask_os
   if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
     dp_info "Some steps need sudo; you may be asked for your password."
   fi
@@ -37,7 +25,7 @@ dp_preflight() {
   for c in git curl openssl rsync awk flock envsubst; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
   if (( ${#missing[@]} )); then
     local pkgs=() m
-    for m in "${missing[@]}"; do case "$m" in envsubst) pkgs+=(gettext-base) ;; flock) pkgs+=(util-linux) ;; *) pkgs+=("$m") ;; esac; done
+    for m in "${missing[@]}"; do pkgs+=("$(dp_pkg_name "$m")"); done
     dp_pkg_install "${pkgs[@]}"
   fi
   local mem_mb disk_gb
@@ -90,13 +78,12 @@ dp_harden() {
   dp_section "Server hardening (each step optional)"
   if [[ "$EDGE_MODE" == "panel" ]]; then
     dp_info "Firewall skipped: the panel serves the public ports; use the panel's own firewall."
-  elif command -v ufw >/dev/null 2>&1 || dp_yes "Install ufw firewall?" n DP_HARDEN_UFW_INSTALL; then
-    command -v ufw >/dev/null 2>&1 || dp_pkg_install ufw
+  elif [[ "$(dp_fw_active)" != none ]] || dp_yes "No firewall is active. Install and enable $(dp_pkg_name firewall)?" n DP_HARDEN_UFW_INSTALL; then
     if dp_yes "Firewall: allow only SSH + HTTP/HTTPS (${PUBLIC_HTTP_PORT:-80}/${PUBLIC_HTTPS_PORT:-443})?" y DP_HARDEN_UFW; then
-      sudo ufw allow OpenSSH >/dev/null
-      sudo ufw allow "${PUBLIC_HTTP_PORT:-80}/tcp" >/dev/null
-      sudo ufw allow "${PUBLIC_HTTPS_PORT:-443}/tcp" >/dev/null
-      sudo ufw --force enable >/dev/null && dp_ok "ufw enabled"
+      [[ "$(dp_fw_active)" != none ]] || dp_fw_enable
+      dp_fw_allow_ssh
+      dp_fw_allow_ports "${PUBLIC_HTTP_PORT:-80}" "${PUBLIC_HTTPS_PORT:-443}"
+      dp_ok "$(dp_fw_active) enabled: SSH, ${PUBLIC_HTTP_PORT:-80}, ${PUBLIC_HTTPS_PORT:-443}"
       # Containers reaching natively installed services come in through the bridge.
       if [[ "$DB_MODE" == native || "$REDIS_MODE" == native || "$(dp_minio_mode)" == native ]]; then dp_allow_bridge; fi
     fi
@@ -111,10 +98,10 @@ dp_harden() {
     printf '{\n  "log-driver": "json-file",\n  "log-opts": { "max-size": "10m", "max-file": "5" }\n}\n' | sudo tee /etc/docker/daemon.json >/dev/null
     sudo systemctl restart docker && dp_ok "docker log rotation set"
   fi
-  if command -v apt-get >/dev/null 2>&1 && ! dpkg -s unattended-upgrades >/dev/null 2>&1 \
-    && dp_yes "Enable automatic security updates (unattended-upgrades)?" y DP_HARDEN_UPGRADES; then
-    dp_pkg_install unattended-upgrades && sudo dpkg-reconfigure -f noninteractive unattended-upgrades
+  if ! dp_os_auto_updates_on && dp_yes "Enable automatic security updates ($([[ $(dp_os) == debian ]] && echo unattended-upgrades || echo dnf-automatic))?" y DP_HARDEN_UPGRADES; then
+    dp_os_auto_updates_enable && dp_ok "automatic security updates enabled"
   fi
+  dp_os_auto_updates_note
   if sudo sshd -T 2>/dev/null | grep -q '^passwordauthentication yes'; then
     dp_warn "SSH password login is enabled; consider key-only auth (PasswordAuthentication no)."
   fi

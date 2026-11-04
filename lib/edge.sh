@@ -2,8 +2,8 @@
 # Public edge: host nginx sites (certbot | byo cert) or upstream list for a panel (panel).
 # Native runtime additionally gets a loopback nginx block per env in front of PHP-FPM.
 
-DP_NGINX_AVAIL="${DP_NGINX_AVAIL:-/etc/nginx/sites-available}"
-DP_NGINX_ENABLED="${DP_NGINX_ENABLED:-/etc/nginx/sites-enabled}"
+# Site directories depend on the OS family (dp_nginx_dirs: sites-available/-enabled on
+# Debian/Ubuntu, conf.d elsewhere); DP_NGINX_AVAIL / DP_NGINX_ENABLED override them.
 
 _dp_render() { # template dest VAR=value...
   local tpl="$1" dest="$2"; shift 2
@@ -28,18 +28,27 @@ dp_edge_sites() {
 dp_edge_need_nginx() { [[ "$EDGE_MODE" != "panel" || "$RUNTIME" == "native" ]]; }
 
 dp_edge_prereqs() {
+  dp_nginx_dirs
   dp_edge_need_nginx || return 0
-  command -v nginx >/dev/null 2>&1 || dp_pkg_install nginx
-  command -v envsubst >/dev/null 2>&1 || dp_pkg_install gettext-base
-  [[ "$EDGE_MODE" == "certbot" ]] && ! command -v certbot >/dev/null 2>&1 && dp_pkg_install certbot
+  command -v nginx >/dev/null 2>&1 || { dp_pkg_install nginx; sudo systemctl enable --now nginx >/dev/null 2>&1 || true; }
+  command -v envsubst >/dev/null 2>&1 || dp_pkg_install "$(dp_pkg_name envsubst)"
+  if [[ "$EDGE_MODE" == "certbot" ]] && ! command -v certbot >/dev/null 2>&1; then
+    dp_os_epel   # certbot is in EPEL on RHEL clones
+    dp_pkg_install "$(dp_pkg_name certbot)"
+  fi
   sudo mkdir -p "$DP_NGINX_AVAIL" "$DP_NGINX_ENABLED" /var/www/certbot
+  dp_nginx_include_confd
+  # Public sites need 80/443 through an active firewall (RHEL/openSUSE enable firewalld by default).
+  [[ "$EDGE_MODE" != panel ]] && dp_fw_allow_ports "${PUBLIC_HTTP_PORT:-80}" "${PUBLIC_HTTPS_PORT:-443}"
+  return 0
 }
 
 _dp_site_name() { printf '%s--%s.conf' "$PROJECT_SLUG" "$1"; }
 
 _dp_enable() {
   local name="$1"
-  sudo ln -sfn "${DP_NGINX_AVAIL}/${name}" "${DP_NGINX_ENABLED}/${name}"
+  # conf.d layouts load the file itself; sites-available needs the sites-enabled link.
+  [[ "$DP_NGINX_AVAIL" == "$DP_NGINX_ENABLED" ]] || sudo ln -sfn "${DP_NGINX_AVAIL}/${name}" "${DP_NGINX_ENABLED}/${name}"
   DP_KEEP_SITES+=" ${name} "
 }
 
@@ -52,7 +61,8 @@ _dp_prune_sites() {
     [[ -e "$f" ]] || continue
     base="$(basename "$f")"
     [[ "$DP_KEEP_SITES" == *" ${base} "* ]] && continue
-    sudo rm -f "${DP_NGINX_ENABLED}/${base}" "$f"
+    [[ "$DP_NGINX_AVAIL" == "$DP_NGINX_ENABLED" ]] || sudo rm -f "${DP_NGINX_ENABLED}/${base}"
+    sudo rm -f "$f"
     echo "    removed stale site ${base}"
   done
 }
@@ -69,8 +79,10 @@ dp_edge_apply() {
 
   if [[ "$RUNTIME" == "native" ]]; then
     dp_native_fpm_pool
+    dp_selinux_prepare
     local env
     for env in $ENABLED_ENVS; do
+      dp_selinux_http_port "$(dp_ev "$env" API_PORT)"   # nginx listens on the loopback API port
       name="$(_dp_site_name "${env}-api-fpm")"
       _dp_render api-fpm.conf.template "${DP_NGINX_AVAIL}/${name}" \
         SLUG="$PROJECT_SLUG" ENV_NAME="$env" API_PORT="$(dp_ev "$env" API_PORT)" FPM_PASS="$([[ $FPM_SOCK == /* ]] && echo "unix:${FPM_SOCK}" || echo "$FPM_SOCK")" \

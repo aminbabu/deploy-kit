@@ -14,7 +14,7 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 DP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${DP_ROOT}/.." && pwd)"
-for f in ui envfile state system env-urls services backend-run native; do
+for f in ui envfile os state system env-urls services backend-run native; do
   # shellcheck source=/dev/null
   source "${DP_ROOT}/lib/${f}.sh"
 done

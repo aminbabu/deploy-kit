@@ -16,9 +16,14 @@ ask() { # var label default
 yes_no() { local a; read -r -p "$1 [${2:-y}]: " a || true; [[ "${a:-${2:-y}}" =~ ^[Yy] ]]; }
 
 (( BASH_VERSINFO[0] >= 4 )) || die "bash >= 4 required"
+# git + ssh-keygen with whichever package manager this distro has (setup.sh asks the OS family later).
 for c in git ssh-keygen; do
   command -v "$c" >/dev/null 2>&1 && continue
   if command -v apt-get >/dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y -qq git openssh-client
+  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y -q git openssh-clients
+  elif command -v yum >/dev/null 2>&1; then sudo yum install -y -q git openssh-clients
+  elif command -v zypper >/dev/null 2>&1; then sudo zypper --non-interactive --quiet install git openssh-clients
+  elif command -v pacman >/dev/null 2>&1; then sudo pacman -S --needed --noconfirm git openssh
   else die "please install ${c}"; fi
 done
 

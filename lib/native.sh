@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Native (non-Docker) installs on this host: PostgreSQL, MariaDB, Redis, MinIO, and the
-# PHP-FPM / Composer / Node toolchain for RUNTIME=native. Distro packages via apt/dnf
-# (asked first); MinIO from dl.min.io. When the app runs in Docker, native services
+# PHP-FPM / Composer / Node toolchain for RUNTIME=native. Distro packages through the
+# OS layer (lib/os.sh: apt, dnf, zypper or pacman; asked first); MinIO from dl.min.io. When the app runs in Docker, native services
 # also listen on the project network's gateway so containers can reach them.
 
 # Start <unit> after Docker so the gateway address exists when it binds.
@@ -13,11 +13,10 @@ dp_after_docker() {
   sudo systemctl daemon-reload
 }
 
-# Let containers reach native services through an active ufw.
+# Let containers reach native services through an active firewall (ufw or firewalld).
 dp_allow_bridge() {
   [[ "$RUNTIME" == docker ]] || return 0
-  command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q '^Status: active' || return 0
-  sudo ufw allow from "$(dp_bridge_subnet)" to "$(dp_bridge_ip)" comment "${PROJECT_SLUG} containers" >/dev/null
+  dp_fw_allow_bridge "$(dp_bridge_subnet)" "$(dp_bridge_ip)"
 }
 
 # Set "key value" in a space-separated config file (replaces an existing or commented line).
@@ -32,29 +31,28 @@ _dp_conf_set() {
 }
 
 dp_native_pg() {
-  if command -v psql >/dev/null 2>&1 && systemctl cat postgresql >/dev/null 2>&1; then
+  DP_PG_SERVICE="$(dp_pg_service)"
+  if command -v psql >/dev/null 2>&1 && systemctl cat "$DP_PG_SERVICE" >/dev/null 2>&1; then
     local have; have="$(psql --version | grep -oE '[0-9]+' | head -1)"
     [[ -z "${DB_VERSION:-}" || "$have" == "${DB_VERSION%%.*}" ]] \
       || dp_warn "PostgreSQL ${have} is already installed; using it (DB_VERSION=${DB_VERSION} needs a manual upgrade)."
-  elif [[ -n "${DB_VERSION:-}" ]]; then
-    # The distro ships one major; others come from the PostgreSQL project's apt repo (PGDG).
-    apt-cache show "postgresql-${DB_VERSION}" >/dev/null 2>&1 || dp_pgdg_repo
-    dp_pkg_install "postgresql-${DB_VERSION}"   # contrib modules ship inside it (PG 10+)
   else
-    dp_pkg_install postgresql postgresql-contrib
+    # The distro ships one major; others come from the PostgreSQL project's repos (PGDG).
+    dp_os_install_pg "${DB_VERSION:-}"
   fi
-  sudo systemctl enable --now postgresql >/dev/null 2>&1 || true
+  sudo systemctl enable --now "$DP_PG_SERVICE" >/dev/null 2>&1 || true
+  dp_pg_hba_scram
   local listen="localhost" hba line reload=0
   if [[ "$RUNTIME" == docker ]]; then
     listen="localhost,$(dp_bridge_ip)"
     hba="$(_dp_pg_admin -tAc 'SHOW hba_file' </dev/null)"
     line="host all all $(dp_bridge_subnet) scram-sha-256"
     sudo grep -qxF "$line" "$hba" || { echo "$line" | sudo tee -a "$hba" >/dev/null; reload=1; }
-    dp_after_docker postgresql
+    dp_after_docker "$DP_PG_SERVICE"
   fi
   if [[ "$(_dp_pg_admin -tAc 'SHOW listen_addresses' </dev/null)" != "$listen" ]]; then
     _dp_pg_admin -c "ALTER SYSTEM SET listen_addresses = '${listen}'" </dev/null
-    sudo systemctl restart postgresql
+    sudo systemctl restart "$DP_PG_SERVICE"
   elif (( reload )); then
     _dp_pg_admin -c 'SELECT pg_reload_conf()' </dev/null >/dev/null
   fi
@@ -62,20 +60,9 @@ dp_native_pg() {
   dp_ok "PostgreSQL (native) listening on ${listen}:5432"
 }
 
-dp_pgdg_repo() {
-  command -v apt-get >/dev/null 2>&1 || dp_die "PostgreSQL ${DB_VERSION}: install it yourself (no apt here), then re-run."
-  dp_info "Adding the PostgreSQL apt repository (apt.postgresql.org) for PostgreSQL ${DB_VERSION}"
-  local codename; codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
-  [[ -n "$codename" ]] || dp_die "Cannot read the distro codename from /etc/os-release"
-  sudo install -d /usr/share/postgresql-common/pgdg
-  sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
-  echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
-    | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-  sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-}
-
 dp_native_mariadb() {
-  command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1 || dp_pkg_install mariadb-server
+  command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1 || dp_pkg_install "$(dp_pkg_name mariadb)"
+  dp_os_mariadb_init
   local svc=mariadb conf="/etc/mysql/mariadb.conf.d/60-${PROJECT_SLUG}.cnf" bind="127.0.0.1" want
   systemctl cat mariadb >/dev/null 2>&1 || svc=mysql
   [[ -d /etc/mysql/mariadb.conf.d ]] || conf="/etc/my.cnf.d/60-${PROJECT_SLUG}.cnf"
@@ -91,10 +78,9 @@ dp_native_mariadb() {
 }
 
 dp_native_redis() {
-  command -v redis-server >/dev/null 2>&1 || dp_pkg_install redis-server
-  local conf=/etc/redis/redis.conf svc=redis-server before bind="127.0.0.1 -::1" pw
-  sudo test -f "$conf" || conf=/etc/redis.conf
-  systemctl cat redis-server >/dev/null 2>&1 || svc=redis
+  [[ -n "$(dp_redis_server_bin)" ]] || dp_pkg_install "$(dp_pkg_name redis)"
+  dp_redis_layout
+  local conf="$DP_REDIS_CONF" svc="$DP_REDIS_SERVICE" before bind="127.0.0.1 -::1" pw
   before="$(sudo md5sum "$conf")"
   # "-" = optional address (Redis 7): the gateway may not exist yet at boot.
   [[ "$RUNTIME" == docker ]] && bind+=" -$(dp_bridge_ip)" && dp_after_docker "$svc"
@@ -106,14 +92,14 @@ dp_native_redis() {
   sudo systemctl enable "$svc" >/dev/null 2>&1 || true
   [[ "$(sudo md5sum "$conf")" == "$before" ]] && sudo systemctl start "$svc" || sudo systemctl restart "$svc"
   dp_allow_bridge
-  dp_ok "Redis (native) listening on ${bind}:6379"
+  dp_ok "Redis (native, ${svc}) listening on ${bind}:6379"
 }
 
 dp_native_minio() {
   local arch name="${PROJECT_SLUG}-minio" bin dir data envf unit addr
   case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) dp_die "MinIO: unsupported CPU $(uname -m)" ;; esac
   dir="/usr/local/lib/${name}"; bin="${dir}/minio"; data="/var/lib/${name}"; envf="/etc/default/${name}"
-  sudo mkdir -p "$dir"
+  sudo mkdir -p "$dir" /etc/default
   if [[ ! -x "$bin" ]]; then
     dp_info "Installing MinIO server + client → ${dir}"
     sudo curl -fsSL -o "$bin" "https://dl.min.io/server/minio/release/linux-${arch}/minio"
@@ -144,13 +130,13 @@ dp_native_minio() {
 dp_native_fpm_pool() {
   local v svc conf sock tmp fpm_bin web_user web_group u g backup=""
   v="$(dp_php_ver)"; [[ -n "$v" ]] || v="$(dp_php_default_ver)"
-  svc="php${v}-fpm"; sock="/run/php/php${v}-${PROJECT_SLUG}-fpm.sock"
-  conf="/etc/php/${v}/fpm/pool.d/dk-${PROJECT_SLUG}.conf"
-  fpm_bin="$(command -v "php-fpm${v}" || echo "/usr/sbin/php-fpm${v}")"
-  sudo test -x "$fpm_bin" || dp_die "PHP-FPM ${v} not found (${fpm_bin}). Install php${v}-fpm or pick another PHP version: deploy/setup.sh components"
+  dp_php_layout "$v"
+  svc="$DP_FPM_SERVICE"; sock="$DP_FPM_SOCK"; conf="${DP_FPM_POOL_DIR}/dk-${PROJECT_SLUG}.conf"; fpm_bin="$DP_FPM_BIN"
+  sudo test -x "$fpm_bin" || dp_die "PHP-FPM ${v} not found (${fpm_bin}). Install PHP-FPM or pick another PHP version: deploy/setup.sh components"
+  dp_php_fpm_prepare
   u="$(id -un)"; g="$(id -gn)"
   web_user="$(sudo nginx -T 2>/dev/null | awk '$1 == "user" { sub(/;$/, "", $2); print $2; exit }' || true)"
-  id "${web_user:-x}" >/dev/null 2>&1 || web_user=www-data
+  id "${web_user:-x}" >/dev/null 2>&1 || web_user="$(dp_os_web_user)"
   web_group="$(id -gn "$web_user")"
   tmp="$(mktemp)"
   printf '%s\n' \
@@ -205,32 +191,46 @@ dp_native_sudoers() {
 
 # PHP-FPM + Composer (+ Node when a frontend is deployed) for RUNTIME=native.
 dp_native_app_prereqs() {
-  local pkgs=() db_ext php_bin p
-  # Versioned names (php8.4-redis) when the pool pins a version, else the distro default.
+  local pkgs=() php_bin v mods m p db_mod
+  # Versioned packages (php8.4-redis) when the pool pins a version, else the distro default.
   [[ -n "$(dp_php_ver)" ]] || PHP_VERSION="$(dp_php_default_ver)"
-  p="php$(dp_php_ver)-"
-  db_ext="${p}$([[ $DB_ENGINE == mysql ]] && echo mysql || echo pgsql)"
+  v="$(dp_php_ver)"
+  db_mod="pdo_$([[ $DB_ENGINE == mysql ]] && echo mysql || echo pgsql)"
   php_bin="$(dp_php_bin || true)"
+  # Laravel + Horizon needs: DB driver, redis, and the usual extensions (pcntl/posix for workers).
+  # openssl..iconv are built in on most distros; openSUSE packages them separately.
+  local need=(cli fpm "$db_mod" redis mbstring dom xml curl zip bcmath intl gd pcntl posix sodium openssl phar tokenizer ctype fileinfo iconv)
   if [[ -z "$php_bin" ]]; then
-    pkgs+=("${p}fpm" "${p}cli" "$db_ext" "${p}redis" "${p}mbstring" "${p}xml" "${p}curl" "${p}zip" "${p}bcmath" "${p}intl" "${p}gd")
+    dp_php_repo_enable "$v"
+    [[ "$(dp_os)" == rhel ]] && dp_os_epel   # php-pecl-redis / zip live in EPEL or Remi
+    for m in "${need[@]}"; do for p in $(dp_php_ext_pkgs "$v" "$m"); do [[ " ${pkgs[*]} " == *" $p "* ]] || pkgs+=("$p"); done; done
   else
     # Only add what is missing: panels (CloudPanel) ship their own PHP builds whose
     # files clash with the distro's extension packages.
-    local mods ext pkg
     mods="$("$php_bin" -m 2>/dev/null | tr 'A-Z' 'a-z')"
-    for ext in "pdo_${db_ext##*-}:${db_ext}" redis:redis mbstring:mbstring dom:xml curl:curl \
-      zip:zip bcmath:bcmath intl:intl gd:gd; do
-      pkg="${ext#*:}"; ext="${ext%%:*}"; [[ "$pkg" == "$db_ext" ]] || pkg="${p}${pkg}"
-      grep -qx "$ext" <<<"$mods" || pkgs+=("$pkg")
+    for m in "${need[@]}"; do
+      [[ "$m" == cli || "$m" == fpm || "$m" == xml ]] && continue
+      grep -qx "$m" <<<"$mods" && continue
+      for p in $(dp_php_ext_pkgs "$v" "$m"); do [[ " ${pkgs[*]} " == *" $p "* ]] || pkgs+=("$p"); done
     done
-    command -v "php-fpm$(dp_php_ver)" >/dev/null 2>&1 || [[ -x "/usr/sbin/php-fpm$(dp_php_ver)" ]] || pkgs+=("${p}fpm")
+    dp_php_layout "$v"; sudo test -x "$DP_FPM_BIN" || pkgs+=($(dp_php_ext_pkgs "$v" fpm))
   fi
   command -v unzip >/dev/null 2>&1 || pkgs+=(unzip)
   (( ${#pkgs[@]} )) && dp_pkg_install "${pkgs[@]}"
+  # Bundled extensions some distros (Arch) leave commented out in php.ini.
+  # igbinary first: Arch's redis extension is built against it.
+  dp_php_enable_ext igbinary "${need[@]:2}" pdo_pgsql pgsql pdo_mysql mysqli iconv
+  php_bin="$(dp_php_bin || true)"
+  if [[ -n "$php_bin" ]]; then
+    mods="$("$php_bin" -m 2>/dev/null | tr 'A-Z' 'a-z')"
+    local miss=(); for m in "$db_mod" redis mbstring dom curl zip bcmath intl pcntl; do grep -qx "$m" <<<"$mods" || miss+=("$m"); done
+    (( ${#miss[@]} )) && dp_warn "PHP is missing extension(s): ${miss[*]}. Install them for $(dp_os_name), then re-run: deploy/setup.sh services"
+  fi
+  dp_selinux_prepare
   dp_native_fpm_pool
   if ! command -v composer >/dev/null 2>&1; then
     dp_yes "Composer is missing. Install it to /usr/local/bin/composer?" y || dp_die "composer is required for RUNTIME=native"
-    curl -fsSL https://getcomposer.org/installer | php -- --quiet --install-dir=/tmp --filename=composer
+    curl -fsSL https://getcomposer.org/installer | "${php_bin:-php}" -- --quiet --install-dir=/tmp --filename=composer
     sudo mv /tmp/composer /usr/local/bin/composer
   fi
   if dp_fe_on && ! command -v node >/dev/null 2>&1; then
@@ -238,9 +238,8 @@ dp_native_app_prereqs() {
     local nv="${NODE_VERSION:-}"
     [[ -n "$nv" ]] || nv="$(cat "${REPO_ROOT}/.nvmrc" "${REPO_ROOT}/.node-version" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
     nv="${nv:-22}"
-    dp_yes "Node.js is missing. Install Node ${nv} from NodeSource?" y || dp_die "node is required for the frontend"
-    curl -fsSL "https://deb.nodesource.com/setup_${nv}.x" | sudo -E bash -
-    dp_pkg_install nodejs
+    dp_yes "Node.js is missing. Install Node ${nv}?" y || dp_die "node is required for the frontend"
+    dp_os_install_node "$nv"
   fi
   return 0
 }

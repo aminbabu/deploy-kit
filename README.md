@@ -44,7 +44,7 @@ deploy/deploy.sh production --pull
 
 ## Before you start
 
-- [ ] A **Linux server** (Ubuntu or Debian recommended) and a **user with `sudo`** (not root)
+- [ ] A **Linux server with systemd** and a **user with `sudo`** (not root). Supported: Debian/Ubuntu, RHEL/Rocky/AlmaLinux/CentOS Stream/Oracle Linux/Fedora/Amazon Linux, openSUSE/SLES, and Arch/Manjaro. See [Which Linux?](#which-linux)
 - [ ] Your **domain's DNS** pointing to the server (needed for HTTPS)
 - [ ] Your Laravel app has the `/up` route (built into Laravel 11+)
 - [ ] If you have a Next.js frontend: `output: "standalone"` in `next.config.js`
@@ -78,7 +78,7 @@ What the words mean:
 | Word | Meaning |
 |---|---|
 | `docker` | Runs in a container on this server. Isolated and easy to remove. |
-| `native` | Installed directly on this server, like `apt install`. Uses less memory. |
+| `native` | Installed directly on this server with its package manager (`apt`, `dnf`, `zypper` or `pacman`). Uses less memory. |
 | `external` | Already running somewhere else; you type its address. |
 | `none` | Not used. With no Redis, cache, sessions and queues use the database. |
 | `certbot` | Free HTTPS certificates from Let's Encrypt, renewed automatically. |
@@ -86,13 +86,41 @@ What the words mean:
 
 The other questions:
 
+- **Server OS:** detected from the server (`/etc/os-release`), so press Enter. See [Which Linux?](#which-linux).
 - **Environments:** choose `production`, `staging`, `dev`, or your own names. Each gets its own domains, database and Git branch.
 - **Email / SMS / payments / social login:** pick only what you use (e.g. `smtp`, `stripe,bkash`, `google`). You're asked for those keys only. Choose `log` or leave blank to skip.
 - **Background jobs:** `horizon` (needs Redis), `worker`, or `none`.
-- **Database version:** the PostgreSQL or MariaDB major version, read from your CI, compose or DDEV files (e.g. `postgres:17`). With `docker` it picks the image. With `native` PostgreSQL it installs that version, adding the official PostgreSQL apt repository if your distro doesn't ship it. An existing install keeps the version it runs: a new major version can't read old data.
+- **Database version:** the PostgreSQL or MariaDB major version, read from your CI, compose or DDEV files (e.g. `postgres:17`). With `docker` it picks the image. With `native` PostgreSQL it installs that version, adding the official PostgreSQL repository (apt or dnf) if your distro doesn't ship it. An existing install keeps the version it runs: a new major version can't read old data.
 - **How the browser reaches the API:** `direct` means the frontend calls the API domain, so the kit sets up CORS. `proxy` means the frontend forwards `/api` to Laravel with Next.js `rewrites()`, so there's no CORS. This is detected from `next.config`.
 - **Deploy steps:** the health-check path (read from `bootstrap/app.php`), extra artisan commands to run after migrations, the command that creates your first admin user, and the Node.js version (read from `.nvmrc`). Setup lists commands your app ships that deploys often need, such as `l5-swagger:generate` and `*:sync` commands. Type the ones you want, separated by `;`, or `none`.
 - **Frontend server settings (per environment):** values the Next.js server reads that aren't `NEXT_PUBLIC_*`. Setup looks for `process.env.X` in `next.config` and suggests a value. For example, `API_PROXY_TARGET` is suggested as `http://127.0.0.1:<that env's API port>`. Format: `KEY=value; KEY2=value`, or `none`.
+
+---
+
+## Which Linux?
+
+The first question is the server's OS family. Setup detects it; you can override it, for example for a derivative it doesn't recognise. Each family uses its own packages and file locations:
+
+| Family | Distributions | Packages | nginx sites | PHP-FPM pool | Firewall | Automatic updates |
+|---|---|---|---|---|---|---|
+| `debian` | Debian, Ubuntu | `apt` (other PHP versions: ondrej/php PPA on Ubuntu, packages.sury.org on Debian) | `sites-available` + `sites-enabled` | `/etc/php/<v>/fpm/pool.d` | ufw | unattended-upgrades |
+| `rhel` | RHEL, Rocky, AlmaLinux, CentOS Stream, Oracle Linux, Fedora, Amazon Linux | `dnf` + EPEL (other PHP versions: Remi on EL 8/9) | `conf.d` | `/etc/php-fpm.d` | firewalld | dnf-automatic |
+| `suse` | openSUSE Leap/Tumbleweed, SLES | `zypper` | `conf.d` | `/etc/php8/fpm/php-fpm.d` | firewalld | not set up (use `zypper patch`) |
+| `arch` | Arch, Manjaro | `pacman` | `conf.d` (setup adds the include to `nginx.conf`) | `/etc/php/php-fpm.d` | ufw | not set up (rolling release) |
+
+What setup handles for you:
+
+- **PostgreSQL** at the version you choose, from the official PostgreSQL repository on Debian/Ubuntu and RHEL/Fedora, with the data directory initialised where the distro doesn't do it. Where that version isn't packaged, setup warns and installs the distro's own version instead: Arch ships only the newest PostgreSQL, and the PostgreSQL repository has no Fedora 41 builds for arm64. Outside Debian/Ubuntu, password logins over `127.0.0.1` are switched on, because those distros default to `ident`/`trust`.
+- **Redis or Valkey,** whichever the distro ships. Arch and newer Fedora/RHEL ship Valkey, which works the same way.
+- **PHP version:** openSUSE and Arch ship one PHP version, which is used even if you ask for another (setup warns).
+- **SELinux** (RHEL family, when enforcing): allows nginx/PHP-FPM to proxy to loopback ports, read and write the app folder, and listen on the API's loopback port.
+- **Firewall:** if ufw or firewalld is active, setup opens the HTTP/HTTPS ports for the public sites. RHEL and openSUSE turn firewalld on by default.
+
+Docker installs from Docker's own repositories on Debian/Ubuntu and RHEL/Fedora, and from the distro on openSUSE, Arch and Amazon Linux. Setup adds the compose plugin if the distro lacks it.
+
+Alpine, and other systems without systemd, aren't supported.
+
+To change the family later: `deploy/setup.sh components`.
 
 ---
 
@@ -222,7 +250,7 @@ With project name `shop`:
 | HTTPS certificate failed | Check the domain's DNS points to this server, then run `deploy/setup.sh edge`. |
 | Site loads but API calls fail | `deploy/setup.sh doctor` checks the connection and tells you what's wrong. |
 | Build killed on a small server | `deploy/setup.sh harden` and say yes to swap. |
-| Backups fail with an external database | `sudo apt install postgresql-client` (or `mariadb-client`). |
+| Backups fail with an external database | Install the database client: `postgresql-client` / `mariadb-client` (Debian/Ubuntu), `postgresql` / `mariadb` (RHEL, openSUSE, Arch). |
 | Anything else | `deploy/setup.sh doctor`, then `deploy/setup.sh status`. |
 
 ---
