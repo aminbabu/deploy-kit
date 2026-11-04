@@ -11,6 +11,8 @@
 #   vars <env>            edit the catalog variables of an env (mail, SMS, payments, OAuth, …)
 #   domains               change frontend/API/media hosts, then re-sync envs + edge
 #   components            change app paths/runtime and each component's mode (docker/native/external)
+#   steps                 change deploy steps: health path, extra artisan commands, queue:work options, Node version
+#   cd-workflow           write .github/workflows/cd.yml for this project (deploy on push, or after CI passes)
 #   edge                  re-render nginx / re-issue certificates / print panel upstreams
 #   services              (re)start Docker/native data services and align roles/buckets
 #   rotate-secrets        regenerate DB/Redis/MinIO passwords and apply them everywhere
@@ -18,6 +20,7 @@
 #   harden                optional server hardening (firewall, swap, log limits, updates)
 #   deploy <env>          same as deploy/deploy.sh <env>
 #   migrate <env> | seed-admin <env> | backup <env> | restore <env> <file>
+#   artisan <env> -- <command> [args]   run any artisan command in an env (its PHP, .env and storage)
 #   status | doctor       health dashboard / diagnostics
 #   export-answers [file] write a re-usable answers file (no secrets)
 #
@@ -42,7 +45,8 @@ while (( $# )); do
     --skip-deploy) SKIP_DEPLOY=1; shift ;;
     --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
     --purge) ARGS+=("--purge"); shift ;;   # uninstall
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    --) shift; ARGS+=("$@"); break ;;
     -*) dp_die "unknown option $1" ;;
     *) if [[ "$CMD" == "init" && ${#ARGS[@]} -eq 0 && "$1" =~ ^[a-z-]+$ && -z "${DP_CMD_SET:-}" ]]; then CMD="$1"; DP_CMD_SET=1; else ARGS+=("$1"); fi; shift ;;
   esac
@@ -71,6 +75,8 @@ _dp_fill_placeholders() {
   v="${v//\{SLUG\}/$PROJECT_SLUG}"; v="${v//\{ENV\}/$env}"
   v="${v//\{ROOT_DOMAIN\}/${ROOT_DOMAIN:-$(dp_ev "$env" API_HOST)}}"
   v="${v//\{FRONTEND_HOST\}/$(dp_ev "$env" FRONTEND_HOST)}"
+  v="${v//\{FRONTEND_URL\}/$([[ -n "$(dp_ev "$env" FRONTEND_HOST)" ]] && dp_origin "$(dp_ev "$env" FRONTEND_HOST)")}"
+  v="${v//\{API_URL\}/$([[ -n "$(dp_ev "$env" API_HOST)" ]] && dp_origin "$(dp_ev "$env" API_HOST)")}"
   v="${v//\{APP_NAME\}/${VALS[$env|APP_NAME]:-}}"
   v="${v//\{DISK\}/$([[ $STORAGE_MODE == local ]] && echo local || echo s3)}"
   v="${v//\{KV\}/$([[ $REDIS_MODE == none ]] && echo database || echo redis)}"
@@ -108,6 +114,9 @@ _dp_ask_catalog_key() {
     val="${def:-base64:$(openssl rand -base64 32)}"
   elif [[ "${DP_YES:-0}" == "1" ]]; then
     val="$def"
+  elif [[ "$kind" == "file" ]]; then
+    read -r -p "  ${CAT_HELP[$key]}: path to the file on this server [${key}$([[ -n "$def" ]] && echo "=${def}")]: " val || true
+    val="${val:-$def}"
   elif [[ "$kind" == "secret" ]]; then
     read -r -s -p "    ${CAT_HELP[$key]} [${key}]$([[ -n "$def" ]] && echo ' (Enter=keep)'): " val || true; echo
     val="${val:-$def}"
@@ -123,13 +132,27 @@ _dp_ask_catalog_key() {
     val="$(_dp_norm_choice "$key" "$val")" || dp_die "${env}: ${key} needs one of: ${CAT_OPTS[$key]}"
   fi
   [[ "$kind" == "required" && -z "$val" ]] && dp_die "${env}: ${key} is required"
+  [[ "$kind" == "file" && -n "$val" ]] && val="$(_dp_store_file "$env" "$key" "$val")"
   VALS[$env|$key]="$val"
+}
+
+# Copy a file a setting points to (service-account JSON, key, certificate) into
+# <env>/files/ (mode 600); the setting gets the stored path. Docker mounts that dir at the same path.
+_dp_store_file() { # env key path
+  local dir dest src="${3/#\~/$HOME}"
+  dir="$(dp_env_dir "$1")/files"
+  [[ "$src" == "${dir}/"* && -f "$src" ]] && { printf '%s' "$src"; return 0; }
+  [[ -f "$src" ]] || dp_die "${1}: ${2}: file not found: ${src}"
+  mkdir -p "$dir"; chmod 700 "$dir"
+  dest="${dir}/$(tr 'A-Z_' 'a-z-' <<<"$2")"; [[ "$src" == *.* ]] && dest+=".${src##*.}"
+  install -m 600 "$src" "$dest"
+  printf '%s' "$dest"
 }
 
 _dp_ask_group() { # env group prev
   local key
   for key in "${CAT_KEYS[@]}"; do
-    [[ "${CAT_GROUP[$key]}" == "$2" && "${CAT_KIND[$key]}" =~ ^(optional|secret)$ ]] && _dp_ask_catalog_key "$1" "$key" "$3"
+    [[ "${CAT_GROUP[$key]}" == "$2" && "${CAT_KIND[$key]}" =~ ^(optional|secret|file)$ ]] && _dp_ask_catalog_key "$1" "$key" "$3"
   done
   return 0
 }
@@ -141,6 +164,9 @@ dp_ask_env_vars() {
   for key in "${CAT_KEYS[@]}"; do
     case "${CAT_KIND[$key]}" in
       required|gen) _dp_ask_catalog_key "$env" "$key" "$prev" ;;
+      # group "core" = always asked; other groups only when chosen. kind "skip" (set in a
+      # project's vars.extra.catalog) hides a core question the app does not use.
+      optional|secret|file) [[ "${CAT_GROUP[$key]}" == core ]] && _dp_ask_catalog_key "$env" "$key" "$prev" ;;
       select|multi)
         _dp_ask_catalog_key "$env" "$key" "$prev"
         for choice in ${VALS[$env|$key]//,/ }; do _dp_ask_group "$env" "${CAT_GROUP[$key]}-${choice}" "$prev"; done ;;
@@ -201,6 +227,10 @@ dp_ask_project() {
 _dp_find_dir() {
   local glob="$1" d; shift
   for d in "$@"; do compgen -G "${REPO_ROOT}/${d}/${glob}" >/dev/null && { printf '%s' "$d"; return 0; }; done
+  # Monorepos (pnpm/npm/yarn workspaces, Turborepo, Nx): one level under the usual roots.
+  for d in "${REPO_ROOT}"/{apps,services,packages}/*/; do
+    d="${d%/}"; compgen -G "${d}/${glob}" >/dev/null && { printf '%s' "${d#"${REPO_ROOT}"/}"; return 0; }
+  done
   return 1
 }
 _dp_reldir() { local d="${1#./}"; d="${d%/}"; printf '%s' "${d:-.}"; }
@@ -211,6 +241,9 @@ _dp_fe_cmds() {
   [[ "$d" == . ]] && in=""
   if [[ -f "${REPO_ROOT}/pnpm-workspace.yaml" ]]; then
     FE_INSTALL_DEF="pnpm install --frozen-lockfile"; FE_BUILD_DEF="pnpm --filter ./${d} build"
+    # Turborepo: build through turbo so workspace packages the app needs are built first.
+    local pkg; pkg="$(sed -nE 's/^ *"name": *"([^"]+)".*/\1/p' "${REPO_ROOT}/${d}/package.json" 2>/dev/null | head -1)"
+    [[ -f "${REPO_ROOT}/turbo.json" && -n "$pkg" ]] && FE_BUILD_DEF="pnpm turbo run build --filter=${pkg}"
   elif [[ -f "${REPO_ROOT}/${d}/pnpm-lock.yaml" ]]; then
     FE_INSTALL_DEF="${in}pnpm install --frozen-lockfile"; FE_BUILD_DEF="${in}pnpm build"
   elif [[ -f "${REPO_ROOT}/${d}/yarn.lock" || -f "${REPO_ROOT}/yarn.lock" ]]; then
@@ -234,6 +267,10 @@ dp_ask_app() {
   if dp_fe_on; then
     dp_ask FRONTEND_DIR "Next.js frontend directory in the repo" "${fe_dir:-frontend}" dp_v_reldir
     FRONTEND_DIR="$(_dp_reldir "$FRONTEND_DIR")"
+    # rewrites() forwarding /api to Laravel = same-origin proxy: the browser never calls the API host.
+    local mode_def=direct
+    grep -qsE "source: *['\"]/api" "${REPO_ROOT}/${FRONTEND_DIR}"/next.config.* && mode_def=proxy
+    dp_choose FRONTEND_API_MODE "How does the browser reach the API? direct = calls the API domain (CORS); proxy = through the frontend (Next.js rewrites)" "$mode_def" direct proxy
   fi
   dp_ask API_PREFIX "API path prefix for NEXT_PUBLIC_API_URL and OAuth callbacks (none = no prefix)" "/api/v1"
 
@@ -263,6 +300,9 @@ dp_ask_components() {
   dp_section "Components (docker = container on this server, native = installed on this server, external = elsewhere)"
   dp_choose DB_ENGINE "Database engine (pgsql = PostgreSQL, mysql = MySQL/MariaDB)" pgsql pgsql mysql
   dp_choose DB_MODE "Database" docker docker native external
+  if [[ "$DB_MODE" != external && ! ( "$DB_ENGINE" == mysql && "$DB_MODE" == native ) ]]; then
+    dp_ask DB_VERSION "$([[ $DB_ENGINE == mysql ]] && echo MariaDB || echo PostgreSQL) major version" "$(_dp_db_version_default)" dp_v_db_ver
+  fi
   dp_choose REDIS_MODE "Redis for cache/session/queue (none = use the database)" docker docker native external none
   dp_choose STORAGE_MODE "File storage (minio-* = bundled MinIO; s3 = external S3/R2/B2; local = disk)" minio-docker minio-docker minio-native s3 local
   if [[ "$REDIS_MODE" == none ]]; then
@@ -273,6 +313,73 @@ dp_ask_components() {
     dp_choose QUEUE_WORKER "Queue worker: horizon = Laravel Horizon; worker = plain queue:work; none" horizon horizon worker none
   fi
   dp_choose SCHEDULER_ENABLED "Run the Laravel scheduler (schedule:work)?" y y n
+}
+
+# What a deploy runs besides build/migrate/restart. Defaults are detected from the repo.
+dp_ask_deploy_steps() {
+  dp_section "Deploy steps"
+  local be="${REPO_ROOT}/${BACKEND_DIR}" hp hint=()
+  hp="$(sed -nE "s/.*health: *['\"]([^'\"]+)['\"].*/\1/p" "${be}/bootstrap/app.php" 2>/dev/null | head -1)"
+  dp_ask HEALTH_PATH "API path that must answer 200 after a deploy" "${hp:-/up}"
+  # Suggest artisan commands the app ships (API docs, *:sync catalogues); nothing runs unless typed.
+  grep -q '"darkaonline/l5-swagger"' "${be}/composer.json" 2>/dev/null && hint+=("l5-swagger:generate")
+  while IFS= read -r c; do hint+=("$c"); done < <(grep -rhoE "signature *= *'[a-z0-9-]+:sync[a-z0-9:-]*" "${be}/app" "${be}/packages" "${be}/src" 2>/dev/null \
+    | sed -E "s/.*'//" | sort -u)
+  (( ${#hint[@]} )) && dp_info "Artisan commands found in the app that deploys often run: ${hint[*]}"
+  dp_ask POST_DEPLOY_ARTISAN "Extra artisan commands after migrate, ';'-separated (none = no extra steps)" none
+  local adm="${SEED_ADMIN_CLASS:+db:seed --force --class=${SEED_ADMIN_CLASS}}" sig
+  if [[ -z "$adm" && -f "${be}/database/seeders/AdminSeeder.php" ]]; then adm="db:seed --force --class=Database\\Seeders\\AdminSeeder"; fi
+  if [[ -z "$adm" ]]; then
+    sig="$(grep -rhoE "signature *= *'[a-z0-9-]*:?(create|make)-?(staff|admin|super-?admin|user)[^']*" "${be}/app" "${be}/packages" "${be}/src" 2>/dev/null | head -1 | sed -E "s/.*'//" || true)"
+    adm="${sig:-none}"
+  fi
+  dp_ask SEED_ADMIN_CMD "Artisan command 'setup.sh seed-admin' runs to create the first admin ({x} = asked each time; none = not used)" "$adm"
+  [[ "$QUEUE_WORKER" == worker ]] && dp_ask QUEUE_WORK_ARGS "Options for queue:work" "--sleep=3 --tries=3 --max-time=3600"
+  if dp_fe_on && [[ "$RUNTIME" == native ]]; then
+    local nv; nv="$(cat "${REPO_ROOT}/.nvmrc" "${REPO_ROOT}/.node-version" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    dp_ask NODE_VERSION "Node.js major version to install if Node is missing" "${nv:-22}" dp_v_node_major
+  fi
+  return 0
+}
+dp_v_node_major() { [[ "$1" =~ ^[0-9]{2}$ ]]; }
+dp_v_db_ver() { [[ "$1" =~ ^[0-9]{1,2}(\.[0-9]+)?$ ]]; }
+
+# Database major version to suggest: what the repo's CI/DDEV/compose use; an existing install
+# keeps what it runs (the kit's old defaults), since a new major does not read old data.
+_dp_db_version_default() {
+  local v="" f
+  if [[ -n "$(dp_saved PROJECT_SLUG)" ]]; then
+    if [[ "$DB_MODE" == native ]] && command -v psql >/dev/null 2>&1; then
+      psql --version | grep -oE '[0-9]+' | head -1; return 0
+    fi
+    [[ "$DB_ENGINE" == mysql ]] && echo 11 || echo 16; return 0
+  fi
+  for f in "${REPO_ROOT}"/.github/workflows/*.y*ml "${REPO_ROOT}"/docker-compose*.y*ml "${REPO_ROOT}"/compose*.y*ml; do
+    [[ -f "$f" ]] || continue
+    v="$(grep -oE "$([[ $DB_ENGINE == mysql ]] && echo 'mariadb:[0-9]+(\.[0-9]+)?' || echo 'postgres:[0-9]+')" "$f" | head -1 | cut -d: -f2)"
+    [[ -n "$v" ]] && break
+  done
+  if [[ -z "$v" && -f "${REPO_ROOT}/.ddev/config.yaml" ]]; then
+    v="$(sed -n '/^database:/,/^[a-z]/p' "${REPO_ROOT}/.ddev/config.yaml" | sed -nE 's/^ *version: *"?([0-9.]+)"?.*/\1/p' | head -1)"
+  fi
+  echo "${v:-$([[ $DB_ENGINE == mysql ]] && echo 11 || echo 17)}"
+}
+
+# Server-side settings for one env's Next.js server (not NEXT_PUBLIC_*), e.g. API_PROXY_TARGET.
+# Stored as <ENV>_FRONTEND_ENV="K=v; K2=v2" and written to <env>/frontend.env on deploy.
+dp_ask_frontend_env() {
+  dp_fe_on || return 0
+  local env="$1" up def="" k api
+  up="$(dp_env_upper "$env")"; api="${up}_API_PORT"
+  # process.env.X read by next.config (rewrites/redirects are fixed at build time).
+  for k in $(grep -ohE 'process\.env\.[A-Z][A-Z0-9_]*' "${REPO_ROOT}/${FRONTEND_DIR}"/next.config.* 2>/dev/null \
+    | sed 's/process\.env\.//' | grep -vE '^(NODE_ENV|NEXT_PUBLIC_.*|PORT|HOSTNAME)$' | sort -u); do
+    case "$k" in
+      *API*|*BACKEND*|*PROXY*) def+="${def:+; }${k}=http://127.0.0.1:${!api:-8100}" ;;
+      *) def+="${def:+; }${k}=" ;;
+    esac
+  done
+  dp_ask "${up}_FRONTEND_ENV" "${env} frontend server settings, 'KEY=value; KEY2=value' (none = nothing)" "${def:-none}"
 }
 
 dp_ask_edge() {
@@ -396,8 +503,8 @@ dp_ask_services() {
 DP_STATE_KEYS=(PROJECT_SLUG APP_HOME REPO_URL REPO_PATH RUNTIME EDGE_MODE PUBLIC_HTTP_PORT PUBLIC_HTTPS_PORT
   CERTBOT_EMAIL TLS_CERT TLS_KEY PHP_VERSION FPM_SOCK FPM_SERVICE ROOT_DOMAIN ENABLED_ENVS MEDIA_HOST
   BACKEND_DIR FRONTEND_ENABLED FRONTEND_DIR API_PREFIX BACKEND_DOCKERFILE BACKEND_CONTEXT FRONTEND_DOCKERFILE FRONTEND_CONTEXT
-  FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD
-  DB_ENGINE DB_MODE REDIS_MODE STORAGE_MODE QUEUE_WORKER SCHEDULER_ENABLED
+  FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD HEALTH_PATH POST_DEPLOY_ARTISAN QUEUE_WORK_ARGS NODE_VERSION SEED_ADMIN_CMD FRONTEND_API_MODE
+  DB_ENGINE DB_VERSION DB_MODE REDIS_MODE STORAGE_MODE QUEUE_WORKER SCHEDULER_ENABLED
   DB_LOCAL_PORT DB_ROOT_USER REDIS_HOST REDIS_PORT MINIO_PORT MINIO_CONSOLE_PORT MINIO_ROOT_USER BACKUP_ENVS BACKUP_KEEP)
 
 dp_save_state() {
@@ -410,7 +517,7 @@ dp_save_state() {
   done
   for env in $ENABLED_ENVS; do
     up="$(dp_env_upper "$env")"
-    for k in FRONTEND_HOST API_HOST BRANCH API_PORT FRONTEND_PORT REDIS_DB DB_HOST DB_PORT DB_DATABASE DB_USERNAME; do
+    for k in FRONTEND_HOST API_HOST BRANCH API_PORT FRONTEND_PORT FRONTEND_ENV REDIS_DB DB_HOST DB_PORT DB_DATABASE DB_USERNAME; do
       local v="${up}_${k}"; declare -p "$v" >/dev/null 2>&1 && dp_state_set "$v" "${!v}"
     done
     local pw="DB_PASSWORD_${up}"; declare -p "$pw" >/dev/null 2>&1 && dp_secret_set "$pw" "${!pw}"
@@ -512,11 +619,12 @@ cmd_init() {
   dp_ask_project
   dp_ask_app
   dp_ask_components
+  dp_ask_deploy_steps
   dp_ask_edge
   dp_section "Environments"
   dp_multiselect ENABLED_ENVS "Which environments should this server host?" "production" "${DP_KNOWN_ENVS[@]}"
   local env prev=""
-  for env in $ENABLED_ENVS; do dp_ask_env_hosts "$env"; done
+  for env in $ENABLED_ENVS; do dp_ask_env_hosts "$env"; dp_ask_frontend_env "$env"; done
   dp_ask_services
   for env in $ENABLED_ENVS; do dp_ask_env_vars "$env" "$prev"; prev="$env"; done
   dp_summary
@@ -538,7 +646,8 @@ cmd_init() {
   dp_section "Done"
   echo "  Deploy later:   deploy/deploy.sh <env> [--pull]"
   echo "  Add an env:     deploy/setup.sh add-env staging"
-  echo "  Change values:  deploy/setup.sh vars <env> | domains | components | rotate-secrets"
+  echo "  Change values:  deploy/setup.sh vars <env> | domains | components | steps | rotate-secrets"
+  echo "  CI/CD:          deploy/setup.sh cd-workflow"
   echo "  Health:         deploy/setup.sh status | doctor"
   echo "  Superadmin:     deploy/setup.sh seed-admin <env>"
 }
@@ -550,6 +659,7 @@ cmd_add_env() {
   dp_env_enabled "$env" && dp_die "${env} is already enabled"
   ENABLED_ENVS="${ENABLED_ENVS} ${env}"
   dp_ask_env_hosts "$env"
+  dp_ask_frontend_env "$env"
   dp_ask_env_vars "$env" "$(awk '{ print $1 }' <<<"$ENABLED_ENVS")"
   dp_yes "Add ${env}?" y DP_APPLY || dp_die "Aborted."
   dp_save_state; dp_reload_state; dp_apply_envs "$env"
@@ -614,7 +724,10 @@ cmd_vars() {
   local env="${ARGS[0]:-}"; [[ -n "$env" ]] || dp_die "usage: setup.sh vars <env>"
   dp_load_existing; dp_reload_state
   dp_env_enabled "$env" || dp_die "${env} is not enabled"
+  unset "$(dp_env_upper "$env")_FRONTEND_ENV"
+  dp_ask_frontend_env "$env"
   dp_ask_env_vars "$env" ""
+  dp_save_state; dp_reload_state
   dp_apply_envs "$env"
   dp_ok "Updated $(dp_env_file "$env"). Apply with: deploy/deploy.sh ${env}"
 }
@@ -633,15 +746,84 @@ cmd_domains() {
   dp_info "Rebuild so the frontend picks up new URLs: deploy/deploy.sh <env>"
 }
 
+# Run SEED_ADMIN_CMD, asking for each {placeholder} (password-like ones hidden).
+cmd_seed_admin() {
+  local env="$1" tpl="${SEED_ADMIN_CMD:-}" tok name val args=()
+  [[ -z "$tpl" && -n "${SEED_ADMIN_CLASS:-}" ]] && tpl="db:seed --force --class=${SEED_ADMIN_CLASS}"
+  [[ -n "$tpl" && "$tpl" != none ]] || dp_die "No admin command set. Choose one with: deploy/setup.sh steps"
+  # {arg : description} → {arg}; {--option} / {--option=default} are left to their defaults.
+  tpl="$(sed -E -e 's/\{ *([A-Za-z0-9_-]+\??) *:[^}]*\}/{\1}/g' -e 's/\{--[^}]*\}//g' <<<"$tpl")"
+  for tok in $tpl; do
+    if [[ "$tok" =~ ^\{([A-Za-z0-9_-]+)\??\}$ ]]; then
+      name="${BASH_REMATCH[1]}"
+      if [[ "$name" =~ pass|secret ]]; then read -r -s -p "  ${name}: " val; echo; else read -r -p "  ${name}: " val; fi
+      args+=("$val")
+    else
+      args+=("$tok")
+    fi
+  done
+  dp_info "artisan ${args[0]} (${env})"
+  dp_artisan "$env" "${args[@]}"
+}
+
+cmd_steps() {
+  dp_load_existing; dp_reload_state
+  unset HEALTH_PATH POST_DEPLOY_ARTISAN QUEUE_WORK_ARGS NODE_VERSION SEED_ADMIN_CMD
+  dp_ask_deploy_steps
+  dp_save_state
+  dp_ok "Saved. Used from the next deploy: deploy/deploy.sh <env>"
+}
+
+# Write a GitHub Actions CD workflow for this project (envs, branches, slug filled in).
+cmd_cd_workflow() {
+  dp_load_existing; dp_reload_state
+  dp_section "CD workflow (GitHub Actions)"
+  dp_choose CD_STYLE "direct = deploy on push; after-ci = deploy when your CI workflow passed (one CI file, path filters)" after-ci direct after-ci
+  local tpl="${DP_ROOT}/examples/github-actions-cd.yml" out env br branches="" cases="" opts=""
+  if [[ "$CD_STYLE" == after-ci ]]; then
+    dp_ask CD_CI_NAME "name: of your CI workflow" CI
+    tpl="${DP_ROOT}/examples/github-actions-cd-after-ci.yml"
+  fi
+  dp_ask CD_OUT "Write the workflow to" "${REPO_ROOT}/.github/workflows/cd.yml"
+  for env in $ENABLED_ENVS; do
+    br="$(dp_ev "$env" BRANCH)"
+    branches+="${branches:+, }${br}"; opts+="${opts:+, }${env}"
+    cases+="              ${br}) ENV=${env} ;;\n"
+  done
+  out="$CD_OUT"; mkdir -p "$(dirname "$out")"
+  sed -E -e "s/^( *DEPLOY_SLUG:).*/\1 ${PROJECT_SLUG}/" \
+    -e "s/^( *branches:) \[main\]/\1 [${branches}]/" -e "s/^( *options:) \[production\]/\1 [${opts}]/" \
+    -e "s/^( *workflows:) \[CI\]/\1 [${CD_CI_NAME:-CI}]/" \
+    -e '/^ *# staging\) ENV=staging/d' \
+    -e "s/^ *main\) ENV=production ;;$/__CASES__/" "$tpl" \
+    | awk -v c="$(printf '%b' "$cases")" -v style="$CD_STYLE" '
+        # Replace the example'"'"'s "copy this file" header with a generated one.
+        NR == 1 { print; print ""; print "# Generated by deploy/setup.sh cd-workflow (" style "). Re-run it after adding an env."; print "# Needs repo secrets DEPLOY_SSH_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_KEY (DEPLOY_SSH_PORT if not 22)."; skip = 1; next }
+        skip && /^on:/ { skip = 0; print "" }
+        skip { next }
+        /^__CASES__$/ { print c; next } { print }' >"$out"
+  dp_ok "Wrote ${out}"
+  echo "  Commit it in your app repo, then add the GitHub secrets: DEPLOY_SSH_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_KEY (DEPLOY_SSH_PORT if not 22)."
+  [[ "$CD_STYLE" == after-ci ]] && echo "  Your CI workflow must be named '${CD_CI_NAME}' and run on pushes to: ${branches}."
+  return 0
+}
+
 cmd_components() {
   dp_load_existing; dp_reload_state
   local old="${DB_ENGINE}/${DB_MODE} redis:${REDIS_MODE} storage:${STORAGE_MODE} runtime:${RUNTIME}" env
   # Re-ask with the current values as defaults (saved state pre-fills S_*).
   unset BACKEND_DIR FRONTEND_ENABLED FRONTEND_DIR API_PREFIX RUNTIME BACKEND_DOCKERFILE BACKEND_CONTEXT \
     FRONTEND_DOCKERFILE FRONTEND_CONTEXT PHP_VERSION FPM_SOCK FPM_SERVICE FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD \
-    DB_ENGINE DB_MODE REDIS_MODE STORAGE_MODE QUEUE_WORKER SCHEDULER_ENABLED MEDIA_HOST
+    DB_ENGINE DB_MODE REDIS_MODE STORAGE_MODE QUEUE_WORKER SCHEDULER_ENABLED MEDIA_HOST \
+    HEALTH_PATH POST_DEPLOY_ARTISAN QUEUE_WORK_ARGS NODE_VERSION SEED_ADMIN_CMD FRONTEND_API_MODE DB_VERSION
   dp_ask_app
   dp_ask_components
+  local dbv_old; dbv_old="$(dp_saved DB_VERSION)"
+  if [[ -n "$dbv_old" && "${DB_VERSION:-}" != "$dbv_old" && "$DB_MODE" != external ]]; then
+    dp_warn "Database version ${dbv_old} → ${DB_VERSION}: existing data is NOT upgraded. Back up first (setup.sh backup <env>), then restore into the new version."
+    dp_yes "Change the database version anyway?" n || dp_die "Aborted; nothing changed."
+  fi
+  dp_ask_deploy_steps
   if [[ "$DB_ENGINE" != "$(dp_saved DB_ENGINE)" ]]; then
     unset DB_LOCAL_PORT S_DB_LOCAL_PORT DB_ROOT_USER S_DB_ROOT_USER   # engine-specific defaults
   fi
@@ -768,6 +950,7 @@ dp_artisan() { # env cmd...
     DP_ENV="$env" DP_NETWORK="$(dp_network)" ENV_FILE="$(dp_env_file "$env")" \
     BACKEND_IMAGE="${PROJECT_SLUG}-backend:${env}-${sha}" FRONTEND_IMAGE="${PROJECT_SLUG}-frontend:${env}-${sha}" \
     API_PORT="$(dp_ev "$env" API_PORT)" FRONTEND_PORT="$(dp_ev "$env" FRONTEND_PORT)" \
+    FRONTEND_ENV_FILE="$(dp_env_dir "$env")/frontend.env" DP_FILES_DIR="$(dp_env_dir "$env")/files" \
       docker compose -f "${DP_ROOT}/compose/app.yml" exec -T app php artisan "$@"
   else
     (cd "$(dp_env_dir "$env")/backend-run" && "$(dp_php_bin)" artisan "$@")
@@ -782,6 +965,8 @@ case "$CMD" in
   vars) cmd_vars ;;
   domains) cmd_domains ;;
   components) cmd_components ;;
+  steps) cmd_steps ;;
+  cd-workflow) cmd_cd_workflow ;;
   edge) dp_load_existing; dp_reload_state; dp_edge_apply ;;
   services) dp_load_existing; dp_reload_state; dp_prepare_host; dp_services_apply ;;
   rotate-secrets) cmd_rotate_secrets ;;
@@ -789,8 +974,8 @@ case "$CMD" in
   harden) dp_load_existing; dp_reload_state; dp_harden ;;
   deploy) exec "${DP_ROOT}/deploy.sh" "${ARGS[@]}" ;;
   migrate) dp_load_existing; dp_reload_state; dp_artisan "${ARGS[0]:?env}" migrate --force ;;
-  seed-admin) dp_load_existing; dp_reload_state
-    dp_artisan "${ARGS[0]:?env}" db:seed --force --class="${SEED_ADMIN_CLASS:?set SEED_ADMIN_CLASS in project.env (e.g. Database\\Seeders\\AdminSeeder)}" ;;
+  seed-admin) dp_load_existing; dp_reload_state; cmd_seed_admin "${ARGS[0]:?usage: setup.sh seed-admin <env>}" ;;
+  artisan) dp_load_existing; dp_reload_state; dp_artisan "${ARGS[0]:?usage: setup.sh artisan <env> -- <command> [args]}" "${ARGS[@]:1}" ;;
   backup) dp_load_existing; dp_reload_state; dp_backup_db "${ARGS[0]:?env}" ;;
   restore) dp_load_existing; dp_reload_state
     dp_yes "Restore ${ARGS[1]:?file} into ${ARGS[0]:?env}? This overwrites its data." n || dp_die "Aborted."

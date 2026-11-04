@@ -4,6 +4,7 @@ Description=__SLUG__ frontend (__ENV__)
 [Service]
 Type=simple
 WorkingDirectory=__RUN__
+EnvironmentFile=-__FE_ENV__
 Environment=NODE_ENV=production
 Environment=PORT=__PORT__
 Environment=HOSTNAME=127.0.0.1

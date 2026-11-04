@@ -105,6 +105,10 @@ dp_state_load() {
   [[ -n "${PROJECT_SLUG:-}" ]] || dp_die "No project state at $(dp_state_file). Run deploy/setup.sh first."
   dp_state_compat ''
   dp_state_defaults
+  # Docker database image from the chosen major version, unless project.env pins an image.
+  if [[ -n "${DB_VERSION:-}" ]]; then
+    : "${POSTGRES_IMAGE:=postgres:${DB_VERSION}-alpine}" "${MARIADB_IMAGE:=mariadb:${DB_VERSION}}"
+  fi
   # Compose overrides set in project.env (POSTGRES_IMAGE, APP_MEM_LIMIT, …).
   local k
   for k in $(compgen -v | grep -E '_(IMAGE|MEM_LIMIT)$' || true); do export "$k"; done

@@ -1,0 +1,89 @@
+name: CD
+
+# Example CD workflow for repos with ONE CI workflow (monorepos, path-filtered jobs).
+# Copy to .github/workflows/cd.yml in your app repo, set DEPLOY_SLUG to the PROJECT_SLUG
+# you chose in setup.sh, and set `workflows:` to the `name:` of your CI workflow.
+#
+# Deploys only after CI finished successfully on a deployable branch. Jobs that CI skipped
+# (path filters) do not block: a workflow with skipped jobs still concludes "success".
+# The deployed commit is the one CI tested (head_sha), not whatever the branch points to now.
+#
+# Same SSH secrets as github-actions-cd.yml: DEPLOY_SSH_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_KEY
+# (DEPLOY_SSH_PORT, DEPLOY_REPO_PATH optional).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.event.inputs.environment || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Pushes only: CI also runs for pull requests, which must never deploy.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    env:
+      HAS_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST != '' }}
+    steps:
+      - id: map
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ inputs.environment }}"; BRANCH="${{ github.ref_name }}"; SHA="${{ github.sha }}"
+          else
+            BRANCH="${{ github.event.workflow_run.head_branch }}"; SHA="${{ github.event.workflow_run.head_sha }}"
+            case "$BRANCH" in
+              main) ENV=production ;;
+              # staging) ENV=staging ;;   # after: deploy/setup.sh add-env staging
+              *) echo "Branch ${BRANCH} is not deployed"; exit 1 ;;
+            esac
+          fi
+          { echo "env_name=${ENV}"; echo "branch=${BRANCH}"; echo "sha=${SHA}"; } >> "$GITHUB_OUTPUT"
+
+      - name: Deploy over SSH
+        if: env.HAS_SSH_HOST == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          REPO_PATH: ${{ secrets.DEPLOY_REPO_PATH }}
+          DEPLOY_SLUG: myapp
+          BRANCH: ${{ steps.map.outputs.branch }}
+          SHA: ${{ steps.map.outputs.sha }}
+          ENV_NAME: ${{ steps.map.outputs.env_name }}
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          port: ${{ secrets.DEPLOY_SSH_PORT || 22 }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: REPO_PATH,BRANCH,SHA,ENV_NAME,DEPLOY_SLUG
+          command_timeout: 45m
+          script: |
+            set -euo pipefail
+            if [ -z "${REPO_PATH:-}" ] && [ -f "${HOME}/.${DEPLOY_SLUG}.deploy" ]; then
+              REPO_PATH="$(sed -n 's/^REPO_PATH=//p' "${HOME}/.${DEPLOY_SLUG}.deploy")"
+            fi
+            [ -n "${REPO_PATH:-}" ] || { echo "Set DEPLOY_REPO_PATH or run deploy/setup.sh on the server"; exit 1; }
+            cd "$REPO_PATH"
+            git fetch --prune origin "$BRANCH"
+            # The commit CI tested; a newer push gets its own CI run and deploy.
+            git checkout -f -B "$BRANCH" "$SHA"
+            bash deploy/deploy.sh "$ENV_NAME"
+
+      - name: Fail when SSH secrets are missing
+        if: env.HAS_SSH_HOST != 'true'
+        run: |
+          echo "::error::DEPLOY_SSH_HOST is not set, so nothing was deployed. Add DEPLOY_SSH_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_KEY (and DEPLOY_SSH_PORT if not 22)."
+          exit 1

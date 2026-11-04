@@ -142,6 +142,10 @@ dp_check_cors() {
     dp_warn "${api} is answered by '${served}', not '${PROJECT_SLUG}-${env}'. Point its proxy at http://127.0.0.1:$(dp_ev "$env" API_PORT)."
     return 1
   fi
+  if [[ "${FRONTEND_API_MODE:-direct}" == proxy ]]; then
+    dp_ok "frontend proxies the API (same origin); CORS not needed"
+    return 0
+  fi
   if [[ "$allow" == "$fe" || "$allow" == "*" ]]; then
     dp_ok "CORS ${fe} → ${api}"
   else

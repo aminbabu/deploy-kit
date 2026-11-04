@@ -103,6 +103,31 @@ dp_maybe_backup() {
   dp_backup_db "$ENV_NAME"
 }
 
+# Server-side frontend settings of this env (e.g. API_PROXY_TARGET for Next.js rewrites):
+# <env>/frontend.env, given to the frontend build and to the running server.
+FRONTEND_ENV_FILE="${ENV_DIR}/frontend.env"
+if dp_fe_on; then
+  [[ -f "$FRONTEND_ENV_FILE" ]] || printf '# Server-side settings for the %s frontend (%s): KEY=value, one per line.\n# Set them with: deploy/setup.sh vars %s (lines added by hand are kept).\n' \
+    "$PROJECT_SLUG" "$ENV_NAME" "$ENV_NAME" >"$FRONTEND_ENV_FILE"
+  while IFS= read -r kv; do
+    kv="$(xargs <<<"$kv")"; [[ "$kv" == *=* ]] || continue
+    dp_env_set "$FRONTEND_ENV_FILE" "${kv%%=*}" "${kv#*=}"
+  done < <(v="$(dp_ev "$ENV_NAME" FRONTEND_ENV)"; [[ "$v" == none ]] || tr ';' '\n' <<<"$v")
+fi
+dp_frontend_env() {
+  [[ -f "$FRONTEND_ENV_FILE" ]] || return 0
+  local line k v
+  while IFS= read -r line; do
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    k="${BASH_REMATCH[1]}" v="${BASH_REMATCH[2]}"
+    [[ "$v" =~ ^\'(.*)\'$ || "$v" =~ ^\"(.*)\"$ ]] && v="${BASH_REMATCH[1]}"
+    printf '%s=%s\n' "$k" "$v"
+  done <"$FRONTEND_ENV_FILE"
+}
+
+# Extra artisan commands after migrate (POST_DEPLOY_ARTISAN="permission:sync; l5-swagger:generate").
+dp_post_deploy_cmds() { local c; [[ "${POST_DEPLOY_ARTISAN:-none}" == none ]] && return 0; tr ';' '\n' <<<"$POST_DEPLOY_ARTISAN" | while IFS= read -r c; do c="$(xargs <<<"$c")"; [[ -n "$c" ]] && echo "$c"; done; }
+
 # NEXT_PUBLIC_* values of this env: "KEY=value" lines (build args / build env).
 dp_public_env() {
   local k
@@ -112,7 +137,8 @@ dp_public_env() {
 
 # --- docker runtime -----------------------------------------------------------
 # Compose interpolation inputs (exported once; image tags vary per call).
-export PROJECT_SLUG ENV_FILE API_PORT FRONTEND_PORT QUEUE_WORK_ARGS
+DP_FILES_DIR="${ENV_DIR}/files"; mkdir -p "$DP_FILES_DIR"; chmod 700 "$DP_FILES_DIR"
+export PROJECT_SLUG ENV_FILE FRONTEND_ENV_FILE DP_FILES_DIR API_PORT FRONTEND_PORT QUEUE_WORK_ARGS
 export DP_ENV="$ENV_NAME" DP_NETWORK COMPOSE_PROFILES
 COMPOSE_PROFILES="$(echo $DP_ON | tr ' ' ',')"
 
@@ -154,8 +180,8 @@ deploy_docker() {
   docker build -q -t "${PROJECT_SLUG}-backend:${ENV_NAME}-${SHA}" -f "${REPO_ROOT}/${BACKEND_DOCKERFILE}" "${REPO_ROOT}/${BACKEND_CONTEXT}" >/dev/null
   if dp_fe_on; then
     local bargs=() kv
-    while IFS= read -r kv; do bargs+=(--build-arg "$kv"); done < <(dp_public_env)
-    dp_info "Build frontend image (${FRONTEND_DOCKERFILE}; ${#bargs[@]} NEXT_PUBLIC_* args)"
+    while IFS= read -r kv; do bargs+=(--build-arg "$kv"); done < <(dp_public_env; dp_frontend_env)
+    dp_info "Build frontend image (${FRONTEND_DOCKERFILE}; ${#bargs[@]} build args)"
     docker build -q -t "${PROJECT_SLUG}-frontend:${ENV_NAME}-${SHA}" -f "${REPO_ROOT}/${FRONTEND_DOCKERFILE}" \
       "${bargs[@]}" "${REPO_ROOT}/${FRONTEND_CONTEXT}" >/dev/null
   fi
@@ -163,6 +189,12 @@ deploy_docker() {
   dp_maybe_backup
   dp_info "Migrate"
   dp_app_compose "$SHA" run --rm -T app php artisan migrate --force
+  local cmd
+  while IFS= read -r cmd; do
+    dp_info "artisan ${cmd}"
+    # shellcheck disable=SC2086
+    dp_app_compose "$SHA" run --rm -T app php artisan $cmd
+  done < <(dp_post_deploy_cmds)
   dp_worker_drain "$prev"
   dp_info "Start release ${SHA} (app, nginx${DP_ON// /, })"
   dp_app_compose "$SHA" up -d --remove-orphans
@@ -234,7 +266,15 @@ deploy_native() {
   dp_info "Migrate + caches"
   (cd "$BACKEND_RUN" && "$php_bin" artisan migrate --force && "$php_bin" artisan config:cache \
     && "$php_bin" artisan route:cache && "$php_bin" artisan view:cache && "$php_bin" artisan event:cache)
-  dp_verify_backend_config "$BACKEND_RUN" "$(dp_env_value "$ENV_FILE" APP_URL)" "$(dp_fe_on && dp_env_value "$ENV_FILE" FRONTEND_URL)"
+  local cmd
+  while IFS= read -r cmd; do
+    dp_info "artisan ${cmd}"
+    # shellcheck disable=SC2086
+    (cd "$BACKEND_RUN" && "$php_bin" artisan $cmd)
+  done < <(dp_post_deploy_cmds)
+  # A same-origin proxy frontend needs no CORS entry.
+  dp_verify_backend_config "$BACKEND_RUN" "$(dp_env_value "$ENV_FILE" APP_URL)" \
+    "$(dp_fe_on && [[ "${FRONTEND_API_MODE:-direct}" == direct ]] && dp_env_value "$ENV_FILE" FRONTEND_URL)"
 
   if dp_fe_on; then
     dp_ensure_node || dp_die "node not found. Install Node, or run one deploy by hand so its path is remembered (NODE_BIN)."
@@ -242,7 +282,7 @@ deploy_native() {
     # Remember it for non-interactive runs (CI) that don't load nvm.
     [[ "${NODE_BIN:-}" == "$node_bin" ]] || { dp_state_set NODE_BIN "$node_bin"; NODE_BIN="$node_bin"; }
     local pub=() kv
-    while IFS= read -r kv; do pub+=("$kv"); done < <(dp_public_env)
+    while IFS= read -r kv; do pub+=("$kv"); done < <(dp_public_env; dp_frontend_env)
     if [[ "$FRONTEND_INSTALL_CMD$FRONTEND_BUILD_CMD" =~ (pnpm|yarn) ]] && ! command -v "${BASH_REMATCH[1]}" >/dev/null 2>&1; then
       # Into a user-owned dir: a global Node (nvm under /opt, distro /usr) is not writable.
       mkdir -p "${HOME}/.local/bin"
@@ -261,7 +301,7 @@ deploy_native() {
   local worker_cmd="horizon"
   [[ "$QUEUE_WORKER" == worker ]] && worker_cmd="queue:work ${QUEUE_WORK_ARGS}"
   _dp_unit frontend "$FRONTEND_ENABLED" frontend.service.tmpl \
-    -e "s|__PORT__|${FRONTEND_PORT}|g" -e "s|__NODE__|${node_bin}|g" -e "s|__RUN__|${FRONTEND_RUN:-}|g" -e "s|__ENTRY__|${FRONTEND_ENTRY:-}|g"
+    -e "s|__PORT__|${FRONTEND_PORT}|g" -e "s|__NODE__|${node_bin}|g" -e "s|__RUN__|${FRONTEND_RUN:-}|g" -e "s|__ENTRY__|${FRONTEND_ENTRY:-}|g" -e "s|__FE_ENV__|${FRONTEND_ENV_FILE}|g"
   _dp_unit worker "$([[ $QUEUE_WORKER != none ]] && echo y || echo n)" artisan.service.tmpl \
     -e "s|__DESC__|queue worker (${QUEUE_WORKER})|g" -e "s|__CMD__|${worker_cmd}|g" -e "s|__PHP__|${php_bin}|g" -e "s|__RUN__|${BACKEND_RUN}|g"
   _dp_unit scheduler "$SCHEDULER_ENABLED" artisan.service.tmpl \

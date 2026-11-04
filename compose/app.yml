@@ -1,5 +1,5 @@
 # Per-env app stack for RUNTIME=docker. Driven by deploy/deploy.sh:
-#   PROJECT_SLUG, DP_ENV, DP_NETWORK, ENV_FILE, BACKEND_IMAGE, FRONTEND_IMAGE,
+#   PROJECT_SLUG, DP_ENV, DP_NETWORK, ENV_FILE, FRONTEND_ENV_FILE, DP_FILES_DIR, BACKEND_IMAGE, FRONTEND_IMAGE,
 #   API_PORT, FRONTEND_PORT (loopback; the edge/panel proxies to them),
 #   COMPOSE_PROFILES (frontend, horizon|worker, scheduler — the parts chosen in setup.sh)
 
@@ -15,6 +15,8 @@ x-backend: &backend
     RUN_MIGRATIONS: "0"
   volumes:
     - app_storage:/var/www/html/storage
+    # Files settings point to (catalog kind "file"), at the same path as on the host.
+    - ${DP_FILES_DIR:?}:${DP_FILES_DIR:?}:ro
   networks: [data]
   logging: &logging
     driver: json-file
@@ -71,6 +73,8 @@ services:
     profiles: [frontend]
     image: ${FRONTEND_IMAGE:-none}
     restart: unless-stopped
+    env_file:
+      - ${FRONTEND_ENV_FILE:-/dev/null}
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     networks: [data]

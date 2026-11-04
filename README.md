@@ -89,6 +89,10 @@ The other questions:
 - **Environments:** choose `production`, `staging`, `dev`, or your own names. Each gets its own domains, database and Git branch.
 - **Email / SMS / payments / social login:** pick only what you use (e.g. `smtp`, `stripe,bkash`, `google`). You're asked for those keys only. Choose `log` or leave blank to skip.
 - **Background jobs:** `horizon` (needs Redis), `worker`, or `none`.
+- **Database version:** the PostgreSQL or MariaDB major version, read from your CI, compose or DDEV files (e.g. `postgres:17`). With `docker` it picks the image. With `native` PostgreSQL it installs that version, adding the official PostgreSQL apt repository if your distro doesn't ship it. An existing install keeps the version it runs: a new major version can't read old data.
+- **How the browser reaches the API:** `direct` means the frontend calls the API domain, so the kit sets up CORS. `proxy` means the frontend forwards `/api` to Laravel with Next.js `rewrites()`, so there's no CORS. This is detected from `next.config`.
+- **Deploy steps:** the health-check path (read from `bootstrap/app.php`), extra artisan commands to run after migrations, the command that creates your first admin user, and the Node.js version (read from `.nvmrc`). Setup lists commands your app ships that deploys often need, such as `l5-swagger:generate` and `*:sync` commands. Type the ones you want, separated by `;`, or `none`.
+- **Frontend server settings (per environment):** values the Next.js server reads that aren't `NEXT_PUBLIC_*`. Setup looks for `process.env.X` in `next.config` and suggests a value. For example, `API_PROXY_TARGET` is suggested as `http://127.0.0.1:<that env's API port>`. Format: `KEY=value; KEY2=value`, or `none`.
 
 ---
 
@@ -124,6 +128,9 @@ Run these on the server, in your app's checkout (e.g. `cd ~/shop/repo`). Replace
 | Change email / SMS / payment / login keys | `deploy/setup.sh vars production` |
 | Change a domain | `deploy/setup.sh domains` |
 | Change how something runs (e.g. Redis → native, PHP version) | `deploy/setup.sh components` |
+| Change deploy steps (health path, extra artisan commands, `queue:work` options, Node version) | `deploy/setup.sh steps` |
+| Change the frontend's server settings (e.g. `API_PROXY_TARGET`) | `deploy/setup.sh vars production`, then deploy |
+| Create the GitHub Actions deploy workflow | `deploy/setup.sh cd-workflow` |
 | Re-apply nginx, certificates, the PHP-FPM pool, or print the panel's proxy targets | `deploy/setup.sh edge` |
 | Restart the database / Redis / MinIO and re-check their users and buckets | `deploy/setup.sh services` |
 | Add or remove an environment | `deploy/setup.sh add-env staging` / `remove-env staging` |
@@ -136,7 +143,8 @@ Run these on the server, in your app's checkout (e.g. `cd ~/shop/repo`). Replace
 |---|---|
 | Back up / restore the database | `deploy/setup.sh backup production` / `restore production <file>` |
 | Run migrations | `deploy/setup.sh migrate production` |
-| Create the first admin user | `deploy/setup.sh seed-admin production` (set `SEED_ADMIN_CLASS` in `~/shop/project.env`) |
+| Create the first admin user | `deploy/setup.sh seed-admin production`: runs the command chosen in setup, and asks for its `{email}`, `{name}`, … (change it with `setup.sh steps`) |
+| Run any artisan command | `deploy/setup.sh artisan production -- queue:failed` (uses that environment's PHP, `.env` and storage) |
 | Show database / Redis / MinIO passwords | `deploy/setup.sh credentials` |
 | Change all generated passwords | `deploy/setup.sh rotate-secrets` (a Redis shared with other apps is left alone) |
 | Save my answers to reuse on another server | `deploy/setup.sh export-answers` (no passwords) |
@@ -158,14 +166,20 @@ Running `deploy/setup.sh` again is safe: it remembers this app's answers, so pre
 
 ## Deploy on every push (GitHub Actions)
 
-1. Copy [`examples/github-actions-cd.yml`](examples/github-actions-cd.yml) to `.github/workflows/cd.yml` in your app, and set `DEPLOY_SLUG` in it to your project name.
+1. On the server, run `deploy/setup.sh cd-workflow` and choose how deploys start:
+   - `direct`: every push deploys.
+   - `after-ci`: deploy only after your existing CI workflow passes. Setup asks for its `name:`.
+
+   This writes `.github/workflows/cd.yml` with your project name and one branch → environment line for each environment you set up. Copy that file into your app on your computer and commit it. Or copy an example by hand and edit it: [`github-actions-cd.yml`](examples/github-actions-cd.yml) or [`github-actions-cd-after-ci.yml`](examples/github-actions-cd-after-ci.yml).
 2. In GitHub → **Settings → Secrets and variables → Actions**, add:
    - `DEPLOY_SSH_HOST`: your server's address
    - `DEPLOY_SSH_USER`: the server user
    - `DEPLOY_SSH_KEY`: a private SSH key that can log in as that user
    - `DEPLOY_SSH_PORT` *(optional)*: the SSH port, if it isn't 22
 
-Each push to `main` now deploys production. Your app's passwords stay on the server.
+Each push to an environment's branch now deploys it. Your app's passwords stay on the server.
+
+**One CI workflow for the whole repo (monorepo, path filters)?** Choose `after-ci`. The deploy starts only after your CI workflow passes on a push, and it deploys the exact commit CI tested. Pull requests never deploy. Jobs skipped by path filters don't block the deploy. You don't need to change your CI file.
 
 **Native runtime:** setup asks for your sudo password once. It lets your user's services start at boot (`loginctl enable-linger`) and allows exactly one command without a password: reloading the app's PHP-FPM (`/etc/sudoers.d/dk-<project>`). After that, deploys, CI included, never prompt. The frontend, queue worker and scheduler run as your user's systemd services: `systemctl --user status '<project>-*'`, logs with `journalctl --user -u <project>-worker-production`.
 
@@ -175,7 +189,7 @@ Each push to `main` now deploys production. Your app's passwords stay on the ser
 
 1. Builds your app (Docker images, or Composer + Next.js build)
 2. Backs up the database (production and staging)
-3. Runs migrations
+3. Runs migrations, then the extra artisan commands you chose in setup (`setup.sh steps`)
 4. Restarts the app; background jobs finish their current task first
 5. Checks the app responds
    - **docker:** if it doesn't, the previous version is restored automatically
@@ -193,6 +207,7 @@ With project name `shop`:
 |---|---|
 | `~/shop/repo/` | Your app's code (the Git clone) |
 | `~/shop/production/.env` | Laravel `.env` for production. Your own edits are kept. |
+| `~/shop/production/frontend.env` | Server-side settings for the Next.js frontend, such as `API_PROXY_TARGET`. Your setup answers are written here on each deploy. Lines you add by hand are kept. Used for the build and by the running server. |
 | `~/shop/shared/secrets.env` | Generated passwords |
 | `~/shop/backups/production/` | Database backups |
 | `~/shop/project.env` | Your setup answers |
@@ -226,6 +241,19 @@ Pick HTTPS → `panel`. At the end the setup lists lines like `api.example.com �
 
 **Can I host several apps on one server?**
 Yes. Run the installer once per app and give each its own project name. Each app gets its own folder (`~/<project>`), databases, PHP-FPM pool, services and nginx sites. Setup avoids ports and Redis database numbers other apps already use, and reuses the existing password of a shared native Redis instead of changing it.
+
+**My app is a monorepo (pnpm workspace / Turborepo), e.g. `apps/gateway` + `apps/web`.**
+Supported with the `native` runtime. Setup asks every question below and suggests answers from your repo. Press Enter to accept, or type your own.
+- **Directories:** found automatically under `apps/`, `services/` or `packages/`, e.g. `apps/gateway` for the backend and `apps/web` for the frontend.
+- **Build:** `pnpm install --frozen-lockfile`, and `pnpm turbo run build --filter=<web package>` when there's a `turbo.json`. Set `outputFileTracingRoot` to the monorepo root in `next.config`; the kit finds the nested `server.js`.
+- **Node version:** read from `.nvmrc`.
+- **Frontend server settings:** if `next.config` proxies `/api` to Laravel through `rewrites()`, `API_PROXY_TARGET` is suggested for each environment. Rewrites are fixed at build time, so redeploy after changing it.
+- **Extra artisan commands:** e.g. `permission:sync; l5-swagger:generate`. Setup lists the ones it finds in your app.
+- **API access:** `proxy` when `next.config` rewrites `/api` to Laravel.
+- **Database:** `pgsql`, at the version your CI uses. The health path comes from `bootstrap/app.php`.
+- **First admin:** an artisan command such as `app:create-staff {email} {name}` is found and offered for `seed-admin`.
+- **Files your app needs** (e.g. a Firebase service-account JSON): add them to your `vars.extra.catalog` as kind `file`. See [docs/CUSTOMISING.md](docs/CUSTOMISING.md).
+- **CI/CD:** `deploy/setup.sh cd-workflow` → `after-ci` deploys after your existing CI passes.
 
 **My app has no frontend (API only).**
 Answer `n` to "Deploy a Next.js frontend too?".

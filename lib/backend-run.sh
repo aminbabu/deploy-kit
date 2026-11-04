@@ -38,7 +38,7 @@ dp_verify_backend_config() {
   ' 2>/dev/null)" || dp_die "Cannot read ${dir}/bootstrap/cache/config.php"
   got_app="$(sed -n 1p <<<"$got")"; got_cors="$(sed -n 2p <<<"$got")"
   [[ "${got_app%/}" == "${want_app%/}" ]] || dp_die "cached app.url '${got_app}' ≠ '${want_app}' — config belongs to another env"
-  [[ -z "$want_fe" || ",${got_cors}," == *",${want_fe%/},"* ]] || dp_die "cached CORS '${got_cors}' lacks '${want_fe}'"
+  [[ -z "$want_fe" || ",${got_cors}," == *",${want_fe%/},"* || ",${got_cors}," == *",*,"* ]] || dp_die "cached CORS '${got_cors}' lacks '${want_fe}'"
   dp_ok "config cache (app.url=${got_app})"
 }
 

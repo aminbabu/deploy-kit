@@ -32,7 +32,17 @@ _dp_conf_set() {
 }
 
 dp_native_pg() {
-  command -v psql >/dev/null 2>&1 && systemctl cat postgresql >/dev/null 2>&1 || dp_pkg_install postgresql postgresql-contrib
+  if command -v psql >/dev/null 2>&1 && systemctl cat postgresql >/dev/null 2>&1; then
+    local have; have="$(psql --version | grep -oE '[0-9]+' | head -1)"
+    [[ -z "${DB_VERSION:-}" || "$have" == "${DB_VERSION%%.*}" ]] \
+      || dp_warn "PostgreSQL ${have} is already installed; using it (DB_VERSION=${DB_VERSION} needs a manual upgrade)."
+  elif [[ -n "${DB_VERSION:-}" ]]; then
+    # The distro ships one major; others come from the PostgreSQL project's apt repo (PGDG).
+    apt-cache show "postgresql-${DB_VERSION}" >/dev/null 2>&1 || dp_pgdg_repo
+    dp_pkg_install "postgresql-${DB_VERSION}"   # contrib modules ship inside it (PG 10+)
+  else
+    dp_pkg_install postgresql postgresql-contrib
+  fi
   sudo systemctl enable --now postgresql >/dev/null 2>&1 || true
   local listen="localhost" hba line reload=0
   if [[ "$RUNTIME" == docker ]]; then
@@ -50,6 +60,18 @@ dp_native_pg() {
   fi
   dp_allow_bridge
   dp_ok "PostgreSQL (native) listening on ${listen}:5432"
+}
+
+dp_pgdg_repo() {
+  command -v apt-get >/dev/null 2>&1 || dp_die "PostgreSQL ${DB_VERSION}: install it yourself (no apt here), then re-run."
+  dp_info "Adding the PostgreSQL apt repository (apt.postgresql.org) for PostgreSQL ${DB_VERSION}"
+  local codename; codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+  [[ -n "$codename" ]] || dp_die "Cannot read the distro codename from /etc/os-release"
+  sudo install -d /usr/share/postgresql-common/pgdg
+  sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+  echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
+    | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
 }
 
 dp_native_mariadb() {
@@ -212,8 +234,12 @@ dp_native_app_prereqs() {
     sudo mv /tmp/composer /usr/local/bin/composer
   fi
   if dp_fe_on && ! command -v node >/dev/null 2>&1; then
-    dp_yes "Node.js is missing. Install Node 22 LTS from NodeSource?" y || dp_die "node is required for the frontend"
-    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    # NODE_VERSION from setup (defaults to the repo's .nvmrc / .node-version, else 22 LTS).
+    local nv="${NODE_VERSION:-}"
+    [[ -n "$nv" ]] || nv="$(cat "${REPO_ROOT}/.nvmrc" "${REPO_ROOT}/.node-version" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    nv="${nv:-22}"
+    dp_yes "Node.js is missing. Install Node ${nv} from NodeSource?" y || dp_die "node is required for the frontend"
+    curl -fsSL "https://deb.nodesource.com/setup_${nv}.x" | sudo -E bash -
     dp_pkg_install nodejs
   fi
   return 0
