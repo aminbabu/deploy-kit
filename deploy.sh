@@ -48,7 +48,14 @@ FRONTEND_SRC="${REPO_ROOT}/${FRONTEND_DIR}"
 if [[ "$PULL" == "1" ]]; then
   branch="$(dp_ev "$ENV_NAME" BRANCH)"
   dp_info "Sync checkout to origin/${branch}"
-  git -C "$REPO_ROOT" fetch --prune origin "$branch"
+  # GitHub occasionally rejects a valid key for a minute ("Permission denied (publickey)").
+  # Retry with backoff so a transient blip doesn't fail the deploy.
+  for delay in 5 15 30 0; do
+    git -C "$REPO_ROOT" fetch --prune origin "$branch" && break
+    [[ "$delay" -gt 0 ]] || dp_die "git fetch origin ${branch} failed after retries."
+    dp_warn "git fetch failed; retrying in ${delay}s"
+    sleep "$delay"
+  done
   git -C "$REPO_ROOT" checkout -f -B "$branch" "origin/${branch}"
   args=()
   for a in "$@"; do [[ "$a" == "--pull" ]] || args+=("$a"); done
