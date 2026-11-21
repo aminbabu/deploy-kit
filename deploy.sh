@@ -196,11 +196,11 @@ deploy_docker() {
   dp_maybe_backup
   dp_info "Migrate"
   dp_app_compose "$SHA" run --rm -T app php artisan migrate --force
-  local cmd
+  local cmd cmd_parts=()
   while IFS= read -r cmd; do
     dp_info "artisan ${cmd}"
-    # shellcheck disable=SC2086
-    dp_app_compose "$SHA" run --rm -T app php artisan $cmd
+    read -r -a cmd_parts <<< "$cmd"
+    ((${#cmd_parts[@]})) && dp_app_compose "$SHA" run --rm -T app php artisan "${cmd_parts[@]}"
   done < <(dp_post_deploy_cmds)
   dp_worker_drain "$prev"
   dp_info "Start release ${SHA} (app, nginx${DP_ON// /, })"
@@ -273,11 +273,11 @@ deploy_native() {
   dp_info "Migrate + caches"
   (cd "$BACKEND_RUN" && "$php_bin" artisan migrate --force && "$php_bin" artisan config:cache \
     && "$php_bin" artisan route:cache && "$php_bin" artisan view:cache && "$php_bin" artisan event:cache)
-  local cmd
+  local cmd cmd_parts=()
   while IFS= read -r cmd; do
     dp_info "artisan ${cmd}"
-    # shellcheck disable=SC2086
-    (cd "$BACKEND_RUN" && "$php_bin" artisan $cmd)
+    read -r -a cmd_parts <<< "$cmd"
+    ((${#cmd_parts[@]})) && (cd "$BACKEND_RUN" && "$php_bin" artisan "${cmd_parts[@]}")
   done < <(dp_post_deploy_cmds)
   # A same-origin proxy frontend needs no CORS entry.
   dp_verify_backend_config "$BACKEND_RUN" "$(dp_env_value "$ENV_FILE" APP_URL)" \

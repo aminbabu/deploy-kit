@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_ROOT_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_ROOT_PASSWORD:-}
+      POSTGRES_PASSWORD: ${DB_ROOT_PASSWORD:?}
       POSTGRES_DB: postgres
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -34,7 +34,7 @@ services:
     image: ${MARIADB_IMAGE:-mariadb:11}
     restart: unless-stopped
     environment:
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?}
     volumes:
       - mariadb:/var/lib/mysql
     ports:
@@ -53,17 +53,16 @@ services:
     profiles: [redis]
     image: ${REDIS_IMAGE:-redis:7-alpine}
     restart: unless-stopped
-    # requirepass only when REDIS_PASSWORD is set.
-    command: ["sh", "-c", "exec redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}"]
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
     volumes:
       - redis:/data
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     networks: [data]
     healthcheck:
-      test: ["CMD-SHELL", "if [ -n \"$$REDIS_PASSWORD\" ]; then REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping; else redis-cli ping; fi | grep -q PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -75,8 +74,8 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
     volumes:
       - minio:/data
     ports:

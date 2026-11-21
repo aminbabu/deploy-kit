@@ -114,7 +114,17 @@ dp_os_epel() {
 # ---------------------------------------------------------------------------
 dp_os_install_docker() {
   case "$(dp_os)" in
-    debian) curl -fsSL https://get.docker.com | sudo sh ;;
+    debian)
+      local distro codename
+      distro="$(_dp_os_field ID)"
+      codename="$(_dp_os_field VERSION_CODENAME)"
+      sudo install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL "https://download.docker.com/linux/${distro}/gpg" | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+      sudo chmod a+r /etc/apt/keyrings/docker.gpg
+      printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/%s %s stable\n' \
+        "$(dpkg --print-architecture)" "$distro" "$codename" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+      sudo apt-get update -qq
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ;;
     rhel)
       if [[ "$(_dp_os_field ID)" == amzn ]]; then
         sudo dnf install -y -q docker
@@ -133,9 +143,15 @@ dp_os_install_docker() {
   if ! sudo docker compose version >/dev/null 2>&1; then
     local arch; case "$(uname -m)" in x86_64) arch=x86_64 ;; aarch64 | arm64) arch=aarch64 ;; *) dp_die "docker compose: unsupported CPU $(uname -m)" ;; esac
     dp_info "Installing the docker compose plugin"
-    sudo mkdir -p /usr/local/lib/docker/cli-plugins
-    sudo curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    local tmpd; tmpd="$(mktemp -d)"
+    curl -fsSL -o "${tmpd}/docker-compose" \
       "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${arch}"
+    curl -fsSL -o "${tmpd}/docker-compose.sha256" \
+      "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${arch}.sha256"
+    (cd "$tmpd" && awk '{print $1 "  docker-compose"}' docker-compose.sha256 | sha256sum -c - >/dev/null)
+    sudo mkdir -p /usr/local/lib/docker/cli-plugins
+    sudo mv "${tmpd}/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
+    rm -rf "$tmpd"
     sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
   fi
 }
@@ -146,8 +162,19 @@ dp_os_install_docker() {
 dp_os_install_node() { # major
   local nv="$1"
   case "$(dp_os)" in
-    debian) curl -fsSL "https://deb.nodesource.com/setup_${nv}.x" | sudo -E bash - ; dp_pkg_install nodejs ;;
-    rhel) curl -fsSL "https://rpm.nodesource.com/setup_${nv}.x" | sudo -E bash - ; dp_pkg_install nodejs ;;
+    debian)
+      sudo install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+      sudo chmod a+r /etc/apt/keyrings/nodesource.gpg
+      printf 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_%s.x nodistro main\n' "$nv" \
+        | sudo tee /etc/apt/sources.list.d/nodesource.list >/dev/null
+      sudo apt-get update -qq
+      dp_pkg_install nodejs ;;
+    rhel)
+      sudo rpm --import https://rpm.nodesource.com/gpgkey/nodesource-repo.gpg.key
+      printf '[nodesource-nodejs]\nname=Node.js %s.x\nbaseurl=https://rpm.nodesource.com/pub_%s.x/nodistro/nodejs/$basearch\ngpgcheck=1\ngpgkey=https://rpm.nodesource.com/gpgkey/nodesource-repo.gpg.key\nenabled=1\n' "$nv" "$nv" \
+        | sudo tee /etc/yum.repos.d/nodesource-nodejs.repo >/dev/null
+      dp_pkg_install nodejs ;;
     suse) dp_pkg_install "$(dp_pkg_first "nodejs${nv}" nodejs-default nodejs || echo "nodejs${nv}")" ;;
     arch)
       # Arch ships the current Node only (nodejs) or the LTS line (nodejs-lts-*).

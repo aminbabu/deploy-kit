@@ -102,8 +102,16 @@ dp_native_minio() {
   sudo mkdir -p "$dir" /etc/default
   if [[ ! -x "$bin" ]]; then
     dp_info "Installing MinIO server + client → ${dir}"
-    sudo curl -fsSL -o "$bin" "https://dl.min.io/server/minio/release/linux-${arch}/minio"
-    sudo curl -fsSL -o "${dir}/mc" "https://dl.min.io/client/mc/release/linux-${arch}/mc"
+    local tmpd; tmpd="$(mktemp -d)"
+    curl -fsSL -o "${tmpd}/minio" "https://dl.min.io/server/minio/release/linux-${arch}/minio"
+    curl -fsSL -o "${tmpd}/minio.sha256sum" "https://dl.min.io/server/minio/release/linux-${arch}/minio.sha256sum"
+    (cd "$tmpd" && awk '{print $1 "  minio"}' minio.sha256sum | sha256sum -c - >/dev/null)
+    curl -fsSL -o "${tmpd}/mc" "https://dl.min.io/client/mc/release/linux-${arch}/mc"
+    curl -fsSL -o "${tmpd}/mc.sha256sum" "https://dl.min.io/client/mc/release/linux-${arch}/mc.sha256sum"
+    (cd "$tmpd" && awk '{print $1 "  mc"}' mc.sha256sum | sha256sum -c - >/dev/null)
+    sudo mv "${tmpd}/minio" "$bin"
+    sudo mv "${tmpd}/mc" "${dir}/mc"
+    rm -rf "$tmpd"
     sudo chmod +x "$bin" "${dir}/mc"
   fi
   id minio-user >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin minio-user
@@ -230,7 +238,16 @@ dp_native_app_prereqs() {
   dp_native_fpm_pool
   if ! command -v composer >/dev/null 2>&1; then
     dp_yes "Composer is missing. Install it to /usr/local/bin/composer?" y || dp_die "composer is required for RUNTIME=native"
-    curl -fsSL https://getcomposer.org/installer | "${php_bin:-php}" -- --quiet --install-dir=/tmp --filename=composer
+    local expected_sig actual_sig
+    expected_sig="$(curl -fsSL https://composer.github.io/installer.sig)"
+    curl -fsSL -o /tmp/composer-setup.php https://getcomposer.org/installer
+    actual_sig="$("${php_bin:-php}" -r "echo hash_file('sha384', '/tmp/composer-setup.php');")"
+    if [[ "$expected_sig" != "$actual_sig" ]]; then
+      rm -f /tmp/composer-setup.php
+      dp_die "Composer installer signature verification failed"
+    fi
+    "${php_bin:-php}" /tmp/composer-setup.php --quiet --install-dir=/tmp --filename=composer
+    rm -f /tmp/composer-setup.php
     sudo mv /tmp/composer /usr/local/bin/composer
   fi
   if dp_fe_on && ! command -v node >/dev/null 2>&1; then

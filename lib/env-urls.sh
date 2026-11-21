@@ -51,6 +51,7 @@ dp_write_managed() {
   dp_env_sync "$file" APP_DEBUG "$debug"
   dp_env_sync "$file" LOG_LEVEL "$level"
   dp_env_sync "$file" SESSION_ENCRYPT "$encrypt"
+  dp_env_sync "$file" SESSION_SECURE_COOKIE "$([[ "$api" == https://* ]] && echo true || echo false)"
   dp_env_sync "$file" APP_URL "$api"
 
   if [[ -n "$fe" ]]; then

@@ -104,17 +104,18 @@ dp_services_db() {
 # --- object storage ---------------------------------------------------------------
 dp_services_buckets() {
   dp_minio_on || return 0
-  local env cmds=":" host
-  for env in $ENABLED_ENVS; do cmds+=" && mc mb -p local/$(dp_bucket "$env") >/dev/null"; done
+  local env host buckets=()
+  for env in $ENABLED_ENVS; do buckets+=("$(dp_bucket "$env")"); done
+  ((${#buckets[@]} > 0)) || return 0
   # No anonymous policy: buckets may hold private uploads; access is the app's call.
   dp_info "Ensuring MinIO buckets for: ${ENABLED_ENVS}"
   if [[ "$(dp_minio_mode)" == docker ]]; then
     docker run --rm --network "$(dp_network)" -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
-      --entrypoint sh minio/mc -c "$cmds"
+      --entrypoint sh minio/mc -c 'for b in "$@"; do mc mb -p "local/$b" >/dev/null; done' _ "${buckets[@]}"
   else
     host="$(dp_minio_upstream)"
     MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@${host}" PATH="/usr/local/lib/${PROJECT_SLUG}-minio:${PATH}" \
-      sh -c "$cmds"
+      sh -c 'for b in "$@"; do mc mb -p "local/$b" >/dev/null; done' _ "${buckets[@]}"
   fi
 }
 
