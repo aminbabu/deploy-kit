@@ -243,7 +243,9 @@ _dp_fe_cmds() {
     FE_INSTALL_DEF="pnpm install --frozen-lockfile"; FE_BUILD_DEF="pnpm --filter ./${d} build"
     # Turborepo: build through turbo so workspace packages the app needs are built first.
     local pkg; pkg="$(sed -nE 's/^ *"name": *"([^"]+)".*/\1/p' "${REPO_ROOT}/${d}/package.json" 2>/dev/null | head -1)"
-    [[ -f "${REPO_ROOT}/turbo.json" && -n "$pkg" ]] && FE_BUILD_DEF="pnpm turbo run build --filter=${pkg}"
+    if [[ -f "${REPO_ROOT}/turbo.json" && -n "$pkg" ]]; then
+      FE_BUILD_DEF="pnpm turbo run build --filter=${pkg}"
+    fi
   elif [[ -f "${REPO_ROOT}/${d}/pnpm-lock.yaml" ]]; then
     FE_INSTALL_DEF="${in}pnpm install --frozen-lockfile"; FE_BUILD_DEF="${in}pnpm build"
   elif [[ -f "${REPO_ROOT}/${d}/yarn.lock" || -f "${REPO_ROOT}/yarn.lock" ]]; then
@@ -253,6 +255,7 @@ _dp_fe_cmds() {
   else
     FE_INSTALL_DEF="${in}npm install"; FE_BUILD_DEF="${in}npm run build"
   fi
+  return 0
 }
 
 dp_ask_app() {
