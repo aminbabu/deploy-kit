@@ -30,7 +30,7 @@ set -euo pipefail
 
 DP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${DP_ROOT}/.." && pwd)"
-for f in ui envfile os state system env-urls services native edge backend-run; do
+for f in ui envfile os state system stack env-urls services native edge backend-run; do
   # shellcheck source=/dev/null
   source "${DP_ROOT}/lib/${f}.sh"
 done

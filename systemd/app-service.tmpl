@@ -1,0 +1,17 @@
+[Unit]
+Description=__SLUG__ __DESC__ (__ENV__)
+
+[Service]
+Type=simple
+WorkingDirectory=__RUN__
+EnvironmentFile=-__ENV_FILE__
+ExecStart=__CMD__
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=70
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

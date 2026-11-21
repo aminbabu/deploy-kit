@@ -86,6 +86,7 @@ dp_state_compat() {
 # Defaults for anything older state does not record.
 dp_state_defaults() {
   : "${OS_FAMILY:=$(dp_os_detect)}"
+  : "${BACKEND_STACK:=laravel}" "${FRONTEND_STACK:=next}"
   : "${RUNTIME:=docker}" "${DB_ENGINE:=pgsql}" "${DB_MODE:=docker}" "${REDIS_MODE:=docker}" "${STORAGE_MODE:=minio-docker}"
   : "${QUEUE_WORKER:=horizon}" "${SCHEDULER_ENABLED:=y}" "${FRONTEND_ENABLED:=y}"
   : "${BACKEND_DIR:=backend}" "${FRONTEND_DIR:=frontend}"

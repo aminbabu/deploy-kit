@@ -93,15 +93,36 @@ dp_write_managed() {
   dp_env_sync "$file" DB_USERNAME "$db_user"
   dp_env_sync "$file" DB_PASSWORD "${!db_pass_key:-}" 1
 
+  if [[ "${BACKEND_STACK:-laravel}" != "laravel" ]]; then
+    local db_scheme="postgresql"
+    [[ "${DB_ENGINE:-pgsql}" == "mysql" ]] && db_scheme="mysql"
+    dp_env_sync "$file" DATABASE_URL "${db_scheme}://${db_user}:${!db_pass_key:-}@${db_host}:${db_port}/${db_name}" 1
+  fi
+
   # Redis (one DB index per env)
   if [[ "$REDIS_MODE" != none ]]; then
+    local r_host r_port r_db
+    r_host="$(dp_svc_host "$REDIS_MODE" redis "${REDIS_HOST:-}")"
+    r_port="$(dp_svc_port "$REDIS_MODE" 6379 "$REDIS_PORT")"
+    r_db="$(dp_ev "$env" REDIS_DB)"
     dp_env_sync "$file" REDIS_CLIENT phpredis
-    dp_env_sync "$file" REDIS_HOST "$(dp_svc_host "$REDIS_MODE" redis "${REDIS_HOST:-}")"
-    dp_env_sync "$file" REDIS_PORT "$(dp_svc_port "$REDIS_MODE" 6379 "$REDIS_PORT")"
+    dp_env_sync "$file" REDIS_HOST "$r_host"
+    dp_env_sync "$file" REDIS_PORT "$r_port"
     dp_env_sync "$file" REDIS_PASSWORD "${REDIS_PASSWORD:-}" 1
-    dp_env_sync "$file" REDIS_DB "$(dp_ev "$env" REDIS_DB)"
+    dp_env_sync "$file" REDIS_DB "$r_db"
+    if [[ "${BACKEND_STACK:-laravel}" != "laravel" ]]; then
+      if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+        dp_env_sync "$file" REDIS_URL "redis://:${REDIS_PASSWORD}@${r_host}:${r_port}/${r_db:-0}" 1
+      else
+        dp_env_sync "$file" REDIS_URL "redis://${r_host}:${r_port}/${r_db:-0}"
+      fi
+    fi
   fi
   dp_env_sync "$file" CACHE_PREFIX "$(dp_env_snake "$PROJECT_SLUG")_${snake}_cache_"
+
+  if declare -F be_env_sync >/dev/null 2>&1; then
+    be_env_sync "$env" "$file"
+  fi
 
   # Bundled MinIO: written as the standard S3 disk (AWS_*) and as MINIO_* for apps
   # that define a dedicated "minio" disk. External S3 keys come from the catalog.

@@ -14,7 +14,7 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 DP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${DP_ROOT}/.." && pwd)"
-for f in ui envfile os state system env-urls services backend-run native; do
+for f in ui envfile os state system stack env-urls services backend-run native; do
   # shellcheck source=/dev/null
   source "${DP_ROOT}/lib/${f}.sh"
 done
@@ -35,6 +35,7 @@ done
 dp_locate_app_home "$REPO_ROOT" || dp_die "Cannot find project state. Set APP_HOME or run deploy/setup.sh."
 dp_state_load
 dp_secrets_load
+dp_load_stacks
 dp_env_enabled "$ENV_NAME" || dp_die "${ENV_NAME} is not enabled (ENABLED_ENVS=${ENABLED_ENVS}). Add it: deploy/setup.sh add-env ${ENV_NAME}"
 
 UP="$(dp_env_upper "$ENV_NAME")"
@@ -261,6 +262,41 @@ _dp_reload_fpm() {
 
 deploy_native() {
   [[ "$ROLLBACK" == "0" ]] || dp_die "--rollback is only available for the docker runtime."
+
+  if [[ "${BACKEND_STACK:-laravel}" != "laravel" ]]; then
+    be_prereqs
+    dp_info "Backend build (${BACKEND_STACK}: ${BACKEND_DIR})"
+    mkdir -p "${ENV_DIR}/backend-run"
+    cp -a "${BACKEND_SRC}/." "${ENV_DIR}/backend-run/"
+    BACKEND_RUN="${ENV_DIR}/backend-run"
+    be_build_native "$BACKEND_SRC" "$BACKEND_RUN" "$ENV_FILE"
+    dp_maybe_backup
+    be_migrate "$BACKEND_RUN" "$ENV_FILE"
+
+    if dp_fe_on; then
+      dp_ensure_node || dp_die "node not found."
+      local node_bin; node_bin="$(command -v node)"
+      local pub=() kv
+      while IFS= read -r kv; do pub+=("$kv"); done < <(dp_public_env; dp_frontend_env)
+      dp_info "Frontend install + build (${FRONTEND_STACK}: ${FRONTEND_DIR})"
+      (cd "$REPO_ROOT" && bash -c "$FRONTEND_INSTALL_CMD" >/dev/null \
+        && env "${pub[@]}" NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1536}" bash -c "$FRONTEND_BUILD_CMD")
+      if [[ "${FRONTEND_STACK:-next}" == "next" ]]; then
+        dp_publish_frontend "$ENV_DIR" "$FRONTEND_SRC"
+      else
+        fe_publish_native "$FRONTEND_SRC" "$ENV_DIR"
+      fi
+      if [[ "$(fe_runtime_mode)" == "node" ]]; then
+        local fe_entry; fe_entry="$(fe_entry_relpath)"
+        _dp_unit frontend "$FRONTEND_ENABLED" frontend.service.tmpl \
+          -e "s|__PORT__|${FRONTEND_PORT}|g" -e "s|__NODE__|${node_bin}|g" -e "s|__RUN__|${ENV_DIR}/frontend|g" -e "s|__ENTRY__|${fe_entry}|g" -e "s|__FE_ENV__|${FRONTEND_ENV_FILE}|g"
+      fi
+    fi
+
+    be_systemd_units "$ENV_NAME" "$BACKEND_RUN" "$ENV_FILE"
+    return 0
+  fi
+
   local php_bin node_bin=""
   php_bin="$(dp_php_bin)" || dp_die "php not found (run: deploy/setup.sh services)"
   command -v composer >/dev/null 2>&1 || dp_die "composer not found"

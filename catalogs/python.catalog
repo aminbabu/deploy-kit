@@ -1,0 +1,6 @@
+# Python (FastAPI / Django) stack-specific environment keys (layered after core vars).
+DATABASE_URL|managed|core||
+REDIS_URL|managed|core||
+SECRET_KEY|gen|core||Application secret key
+ALLOWED_HOSTS|managed|core||
+DEBUG|managed|core|False|

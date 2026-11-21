@@ -1,0 +1,25 @@
+# ${ENV_NAME} API (native HTTP runtime: Node/NestJS/FastAPI/Django): loopback → app server.
+server {
+    listen 127.0.0.1:${API_PORT};
+    server_name _;
+    client_max_body_size ${MAX_BODY};
+
+    add_header X-Served-By "${SLUG}-${ENV_NAME}" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    ${EXTRA_LOCATIONS}
+
+    location / {
+        proxy_pass http://127.0.0.1:${APP_UPSTREAM_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 120s;
+    }
+}

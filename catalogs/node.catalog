@@ -1,0 +1,6 @@
+# Node.js / NestJS stack-specific environment keys (layered after core vars).
+NODE_ENV|managed|core|production|
+PORT|managed|core|3000|
+DATABASE_URL|managed|core||
+REDIS_URL|managed|core||
+JWT_SECRET|gen|core||JWT signing secret

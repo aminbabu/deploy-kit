@@ -1,0 +1,46 @@
+# Generic per-env app stack for HTTP-based backends (Node/NestJS, FastAPI, Django) in RUNTIME=docker.
+name: ${PROJECT_SLUG:?}-${DP_ENV:?}
+
+x-backend: &backend
+  image: ${BACKEND_IMAGE:?}
+  restart: unless-stopped
+  env_file:
+    - ${ENV_FILE:?}
+  volumes:
+    - ${DP_FILES_DIR:?}:${DP_FILES_DIR:?}:ro
+  networks: [data]
+  logging: &logging
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  app:
+    <<: *backend
+    ports:
+      - "127.0.0.1:${API_PORT:?}:${APP_INTERNAL_PORT:-8000}"
+    deploy: { resources: { limits: { memory: "${APP_MEM_LIMIT:-512M}" } } }
+
+  worker:
+    <<: *backend
+    profiles: [worker]
+    command: ${WORKER_CMD:-echo "No WORKER_CMD configured"}
+    stop_grace_period: 60s
+    depends_on: [app]
+    deploy: { resources: { limits: { memory: "${WORKER_MEM_LIMIT:-512M}" } } }
+
+  frontend:
+    profiles: [frontend]
+    image: ${FRONTEND_IMAGE:-none}
+    restart: unless-stopped
+    env_file:
+      - ${FRONTEND_ENV_FILE:-/dev/null}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:${FRONTEND_INTERNAL_PORT:-3000}"
+    networks: [data]
+    logging: *logging
+    deploy: { resources: { limits: { memory: "${FRONTEND_MEM_LIMIT:-512M}" } } }
+
+networks:
+  data:
+    external: true
+    name: ${DP_NETWORK:?}

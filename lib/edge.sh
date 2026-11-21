@@ -78,17 +78,26 @@ dp_edge_apply() {
   fi
 
   if [[ "$RUNTIME" == "native" ]]; then
-    dp_native_fpm_pool
     dp_selinux_prepare
     local env
-    for env in $ENABLED_ENVS; do
-      dp_selinux_http_port "$(dp_ev "$env" API_PORT)"   # nginx listens on the loopback API port
-      name="$(_dp_site_name "${env}-api-fpm")"
-      _dp_render api-fpm.conf.template "${DP_NGINX_AVAIL}/${name}" \
-        SLUG="$PROJECT_SLUG" ENV_NAME="$env" API_PORT="$(dp_ev "$env" API_PORT)" FPM_PASS="$([[ $FPM_SOCK == /* ]] && echo "unix:${FPM_SOCK}" || echo "$FPM_SOCK")" \
-        BACKEND_PUBLIC="$(dp_env_dir "$env")/backend-run/public" MAX_BODY="${MAX_BODY:-64m}"
-      _dp_enable "$name"
-    done
+    if [[ "${BACKEND_STACK:-laravel}" == "laravel" ]]; then
+      dp_native_fpm_pool
+      for env in $ENABLED_ENVS; do
+        dp_selinux_http_port "$(dp_ev "$env" API_PORT)"   # nginx listens on the loopback API port
+        name="$(_dp_site_name "${env}-api-fpm")"
+        _dp_render api-fpm.conf.template "${DP_NGINX_AVAIL}/${name}" \
+          SLUG="$PROJECT_SLUG" ENV_NAME="$env" API_PORT="$(dp_ev "$env" API_PORT)" FPM_PASS="$([[ $FPM_SOCK == /* ]] && echo "unix:${FPM_SOCK}" || echo "$FPM_SOCK")" \
+          BACKEND_PUBLIC="$(dp_env_dir "$env")/backend-run/public" MAX_BODY="${MAX_BODY:-64m}"
+        _dp_enable "$name"
+      done
+    else
+      for env in $ENABLED_ENVS; do
+        dp_selinux_http_port "$(dp_ev "$env" API_PORT)"
+        name="$(_dp_site_name "${env}-api")"
+        be_nginx_native "$env" "${DP_NGINX_AVAIL}/${name}"
+        _dp_enable "$name"
+      done
+    fi
   fi
 
   if [[ "$EDGE_MODE" == "panel" ]]; then
