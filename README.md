@@ -30,15 +30,18 @@ It asks for your app's Git URL, clones it, and starts the setup.
 
 ### Step 3 — Answer the questions
 
-Every question has a sensible default in `[brackets]`; **press Enter to accept it**. At the end you see a summary, type `y`, and your app is live at `https://your-domain`.
+Every question has a sensible default in `[brackets]`; **press Enter to accept it**. At the end you see a summary, type `y` to apply the server configuration, and then choose which environments to build and deploy right away (`Build and deploy now`). Once that finishes, your app is live at `https://your-domain`.
 
-Passwords you leave empty are generated for you. **They're printed once at the end under "Generated credentials — save them now"**, so copy them to your password manager. To see them again later, run `deploy/setup.sh credentials`.
+Passwords you leave empty are generated for you. **They're printed once at the end under "Generated credentials — save them now"**, so copy them to your password manager. To see them again later, run `bash deploy/setup.sh credentials`.
 
-**To deploy new code later:**
+**If you skipped the initial deploy, or to deploy new code later:**
 
 ```bash
-deploy/deploy.sh production --pull
+cd ~/<project>/repo
+bash deploy/deploy.sh production --pull
 ```
+
+*(Omit `--pull` if you already checked out the commit you want to deploy.)*
 
 ---
 
@@ -205,6 +208,7 @@ Running `deploy/setup.sh` again is safe: it remembers this app's answers, so pre
    - `DEPLOY_SSH_HOST`: your server's address
    - `DEPLOY_SSH_USER`: the server user
    - `DEPLOY_SSH_KEY`: a private SSH key that can log in as that user
+   - `DEPLOY_REPO_PATH` *(recommended)*: the repo path on the server, e.g. `/home/<user>/<project>/repo` (needed if your workflow's `DEPLOY_SLUG` differs from the `Project slug` chosen during `setup.sh`)
    - `DEPLOY_SSH_PORT` *(optional)*: the SSH port, if it isn't 22
 
 Each push to an environment's branch now deploys it. Your app's passwords stay on the server.

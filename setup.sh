@@ -562,7 +562,7 @@ dp_deploy_envs() {
   local env
   for env in "$@"; do
     dp_section "Deploy ${env}"
-    "${DP_ROOT}/deploy.sh" "$env" || dp_warn "${env} deploy failed; fix and run: deploy/deploy.sh ${env}"
+    bash "${DP_ROOT}/deploy.sh" "$env" || dp_warn "${env} deploy failed; fix and run: bash deploy/deploy.sh ${env}"
   done
 }
 
@@ -985,7 +985,7 @@ case "$CMD" in
   rotate-secrets) cmd_rotate_secrets ;;
   credentials) cmd_credentials ;;
   harden) dp_load_existing; dp_reload_state; dp_harden ;;
-  deploy) exec "${DP_ROOT}/deploy.sh" "${ARGS[@]}" ;;
+  deploy) exec bash "${DP_ROOT}/deploy.sh" "${ARGS[@]}" ;;
   migrate) dp_load_existing; dp_reload_state; dp_artisan "${ARGS[0]:?env}" migrate --force ;;
   seed-admin) dp_load_existing; dp_reload_state; cmd_seed_admin "${ARGS[0]:?usage: setup.sh seed-admin <env>}" ;;
   artisan) dp_load_existing; dp_reload_state; dp_artisan "${ARGS[0]:?usage: setup.sh artisan <env> -- <command> [args]}" "${ARGS[@]:1}" ;;
