@@ -130,7 +130,20 @@ dp_edge_apply() {
       cert="$TLS_CERT"; key="$TLS_KEY"
       sudo test -f "$cert" && sudo test -f "$key" || dp_die "TLS cert/key not found: ${cert} / ${key}"
     fi
-    _dp_render site.conf.template "${DP_NGINX_AVAIL}/${name}" SITE_HOST="$host" UPSTREAM="$up" CERT="$cert" KEY="$key" "${common[@]}"
+    local spa_dist="" env
+    if [[ "${FRONTEND_STACK:-next}" == "spa" ]]; then
+      for env in $ENABLED_ENVS; do
+        if [[ "$host" == "$(dp_ev "$env" FRONTEND_HOST)" ]]; then
+          spa_dist="$(dp_env_dir "$env")/frontend"
+          break
+        fi
+      done
+    fi
+    if [[ -n "$spa_dist" ]]; then
+      _dp_render site-spa.conf.template "${DP_NGINX_AVAIL}/${name}" SITE_HOST="$host" FRONTEND_DIST="$spa_dist" CERT="$cert" KEY="$key" "${common[@]}"
+    else
+      _dp_render site.conf.template "${DP_NGINX_AVAIL}/${name}" SITE_HOST="$host" UPSTREAM="$up" CERT="$cert" KEY="$key" "${common[@]}"
+    fi
     _dp_enable "$name"
   done < <(dp_edge_sites)
 

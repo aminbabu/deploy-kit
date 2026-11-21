@@ -1,6 +1,6 @@
 # deploy-kit
 
-**Deploy a Laravel app (with or without a Next.js frontend) to your own Linux server by answering questions.**
+**Deploy a Laravel + Next.js app (default) — or NestJS/Node, FastAPI, Django, Nuxt, SolidStart, and Vue/SolidJS SPAs — to your own Linux server by answering questions.**
 It installs what's needed, sets up HTTPS, and deploys. No Docker or Linux expertise required.
 
 ---
@@ -44,6 +44,8 @@ deploy/deploy.sh production --pull
 
 ## Before you start
 
+- **Backend stacks (`BACKEND_STACK`):** `laravel` (default), `node` (NestJS/Express/Fastify/Hono), `fastapi`, `django`
+- **Frontend stacks (`FRONTEND_STACK`):** `next` (default, Next.js standalone; `nextjs` alias), `nitro` (Nuxt.js / SolidStart), `spa` (Vue.js / SolidJS / Vite static `dist/`), `none`
 - [ ] A **Linux server with systemd** and a **user with `sudo`** (not root). Supported: Debian/Ubuntu, RHEL/Rocky/AlmaLinux/CentOS Stream/Oracle Linux/Fedora/Amazon Linux, openSUSE/SLES, and Arch/Manjaro. See [Which Linux?](#which-linux)
 - [ ] Your **domain's DNS** pointing to the server (needed for HTTPS)
 - [ ] Your Laravel app has the `/up` route (built into Laravel 11+)

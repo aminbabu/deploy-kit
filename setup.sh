@@ -257,16 +257,24 @@ _dp_fe_cmds() {
 
 dp_ask_app() {
   dp_section "Application"
-  dp_ask BACKEND_DIR "Laravel backend directory in the repo (. = repo root)" "$(_dp_find_dir artisan backend api server . || echo backend)" dp_v_reldir
+  dp_ask BACKEND_DIR "Backend directory in the repo (. = repo root)" "$(_dp_find_dir artisan backend api server . || echo backend)" dp_v_reldir
   BACKEND_DIR="$(_dp_reldir "$BACKEND_DIR")"
-  [[ -f "${REPO_ROOT}/${BACKEND_DIR}/artisan" ]] || dp_warn "No artisan in ${REPO_ROOT}/${BACKEND_DIR} (fine if this checkout is not the app yet)"
+  local detected_be
+  detected_be="$(dp_detect_backend_stack "${REPO_ROOT}/${BACKEND_DIR}")"
+  dp_choose BACKEND_STACK "Backend stack" "${BACKEND_STACK:-$detected_be}" laravel node fastapi django
+  BACKEND_STACK="$(dp_normalize_backend_stack "$BACKEND_STACK")"
+  [[ "$BACKEND_STACK" != "laravel" || -f "${REPO_ROOT}/${BACKEND_DIR}/artisan" ]] || dp_warn "No artisan in ${REPO_ROOT}/${BACKEND_DIR} (fine if this checkout is not the app yet)"
   local fe_dir fe_def=n
-  fe_dir="$(_dp_find_dir 'next.config.*' frontend web client app . || true)"
+  fe_dir="$(_dp_find_dir 'next.config.*' frontend web client app . || _dp_find_dir 'nuxt.config.*' frontend web client app . || _dp_find_dir 'vite.config.*' frontend web client app . || true)"
   [[ -n "$fe_dir" ]] && fe_def=y
-  dp_choose FRONTEND_ENABLED "Deploy a Next.js frontend too? (n = API only)" "$fe_def" y n
+  dp_choose FRONTEND_ENABLED "Deploy a frontend too? (n = API only)" "$fe_def" y n
   if dp_fe_on; then
-    dp_ask FRONTEND_DIR "Next.js frontend directory in the repo" "${fe_dir:-frontend}" dp_v_reldir
+    dp_ask FRONTEND_DIR "Frontend directory in the repo" "${fe_dir:-frontend}" dp_v_reldir
     FRONTEND_DIR="$(_dp_reldir "$FRONTEND_DIR")"
+    local detected_fe
+    detected_fe="$(dp_detect_frontend_stack "${REPO_ROOT}/${FRONTEND_DIR}")"
+    dp_choose FRONTEND_STACK "Frontend stack" "${FRONTEND_STACK:-$detected_fe}" next nitro spa
+    FRONTEND_STACK="$(dp_normalize_frontend_stack "$FRONTEND_STACK")"
     # rewrites() forwarding /api to Laravel = same-origin proxy: the browser never calls the API host.
     local mode_def=direct
     grep -qsE "source: *['\"]/api" "${REPO_ROOT}/${FRONTEND_DIR}"/next.config.* && mode_def=proxy
@@ -502,7 +510,7 @@ dp_ask_services() {
 
 DP_STATE_KEYS=(OS_FAMILY PROJECT_SLUG APP_HOME REPO_URL REPO_PATH RUNTIME EDGE_MODE PUBLIC_HTTP_PORT PUBLIC_HTTPS_PORT
   CERTBOT_EMAIL TLS_CERT TLS_KEY PHP_VERSION FPM_SOCK FPM_SERVICE ROOT_DOMAIN ENABLED_ENVS MEDIA_HOST
-  BACKEND_DIR FRONTEND_ENABLED FRONTEND_DIR API_PREFIX BACKEND_DOCKERFILE BACKEND_CONTEXT FRONTEND_DOCKERFILE FRONTEND_CONTEXT
+  BACKEND_STACK FRONTEND_STACK BACKEND_DIR FRONTEND_ENABLED FRONTEND_DIR API_PREFIX BACKEND_DOCKERFILE BACKEND_CONTEXT FRONTEND_DOCKERFILE FRONTEND_CONTEXT
   FRONTEND_INSTALL_CMD FRONTEND_BUILD_CMD HEALTH_PATH POST_DEPLOY_ARTISAN QUEUE_WORK_ARGS NODE_VERSION SEED_ADMIN_CMD FRONTEND_API_MODE
   DB_ENGINE DB_VERSION DB_MODE REDIS_MODE STORAGE_MODE QUEUE_WORKER SCHEDULER_ENABLED
   DB_LOCAL_PORT DB_ROOT_USER REDIS_HOST REDIS_PORT MINIO_PORT MINIO_CONSOLE_PORT MINIO_ROOT_USER BACKUP_ENVS BACKUP_KEEP)

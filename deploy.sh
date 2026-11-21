@@ -151,8 +151,10 @@ export DP_ENV="$ENV_NAME" DP_NETWORK COMPOSE_PROFILES
 COMPOSE_PROFILES="$(echo $DP_ON | tr ' ' ',')"
 
 dp_app_compose() { # <release-sha> compose-args...
+  local compose_file="${DP_ROOT}/compose/app.yml"
+  [[ "${BACKEND_STACK:-laravel}" != "laravel" ]] && compose_file="${DP_ROOT}/compose/app-http.yml"
   DP_NETWORK="$(dp_network)" BACKEND_IMAGE="${PROJECT_SLUG}-backend:${ENV_NAME}-$1" FRONTEND_IMAGE="${PROJECT_SLUG}-frontend:${ENV_NAME}-$1" \
-    docker compose -f "${DP_ROOT}/compose/app.yml" "${@:2}"
+    docker compose -f "$compose_file" "${@:2}"
 }
 
 # Stop parts that were switched off (a disabled profile is not an orphan).
@@ -196,13 +198,19 @@ deploy_docker() {
 
   dp_maybe_backup
   dp_info "Migrate"
-  dp_app_compose "$SHA" run --rm -T app php artisan migrate --force
-  local cmd cmd_parts=()
-  while IFS= read -r cmd; do
-    dp_info "artisan ${cmd}"
-    read -r -a cmd_parts <<< "$cmd"
-    ((${#cmd_parts[@]})) && dp_app_compose "$SHA" run --rm -T app php artisan "${cmd_parts[@]}"
-  done < <(dp_post_deploy_cmds)
+  if [[ "${BACKEND_STACK:-laravel}" == "laravel" ]]; then
+    dp_app_compose "$SHA" run --rm -T app php artisan migrate --force
+    local cmd cmd_parts=()
+    while IFS= read -r cmd; do
+      dp_info "artisan ${cmd}"
+      read -r -a cmd_parts <<< "$cmd"
+      ((${#cmd_parts[@]})) && dp_app_compose "$SHA" run --rm -T app php artisan "${cmd_parts[@]}"
+    done < <(dp_post_deploy_cmds)
+  elif [[ -n "${MIGRATE_CMD:-}" ]]; then
+    local mparts=()
+    read -r -a mparts <<< "$MIGRATE_CMD"
+    ((${#mparts[@]})) && dp_app_compose "$SHA" run --rm -T app "${mparts[@]}"
+  fi
   dp_worker_drain "$prev"
   dp_info "Start release ${SHA} (app, nginx${DP_ON// /, })"
   dp_app_compose "$SHA" up -d --remove-orphans
