@@ -7,13 +7,31 @@
 # a read-only deploy key), then runs <repo>/deploy/setup.sh with the same arguments.
 set -euo pipefail
 
-say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
-die() { printf '\033[31mERROR\033[0m %s\n' "$*" >&2; exit 1; }
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  C_B=$'\e[1m' C_OFF=$'\e[0m'
+  if [[ "${COLORTERM:-}" =~ ^(truecolor|24bit)$ ]]; then
+    C_CYN=$'\e[38;2;250;250;250m' C_RED=$'\e[38;2;239;68;68m' C_SLATE=$'\e[38;2;82;82;91m'
+  else
+    C_CYN=$'\e[97m' C_RED=$'\e[38;5;203m' C_SLATE=$'\e[38;5;240m'
+  fi
+else
+  C_CYN='' C_RED='' C_SLATE='' C_B='' C_OFF=''
+fi
+say() { printf '%s│%s  %s▸%s %s\n' "$C_SLATE" "$C_OFF" "$C_CYN" "$C_OFF" "$*"; }
+die() { printf '%s└%s  %s✖%s %s%s%s\n' "$C_SLATE" "$C_OFF" "$C_RED" "$C_OFF" "$C_RED" "$*" "$C_OFF" >&2; exit 1; }
 ask() { # var label default
-  local v; read -r -p "$2${3:+ [$3]}: " v || true
+  local v
+  printf '%s◆%s  %s%s%s%s\n' "$C_CYN" "$C_OFF" "$C_B" "$2" "${3:+ ${C_SLATE}[$3]}" "$C_OFF"
+  read -r -p "${C_SLATE}│${C_OFF}  ${C_CYN}❯${C_OFF} " v || true
   printf -v "$1" '%s' "${v:-$3}"
 }
-yes_no() { local a; read -r -p "$1 [${2:-y}]: " a || true; [[ "${a:-${2:-y}}" =~ ^[Yy] ]]; }
+yes_no() {
+  local a
+  printf '%s◆%s  %s%s%s %s[%s]%s\n' "$C_CYN" "$C_OFF" "$C_B" "$1" "$C_OFF" "$C_SLATE" "${2:-y}" "$C_OFF"
+  read -r -p "${C_SLATE}│${C_OFF}  ${C_CYN}❯${C_OFF} " a || true
+  [[ "${a:-${2:-y}}" =~ ^[Yy] ]]
+}
+printf '\n%s┌%s  %s%sDeploykit%s %s• Bootstrap%s\n%s│%s\n' "$C_SLATE" "$C_OFF" "$C_B" "$C_CYN" "$C_OFF" "$C_SLATE" "$C_OFF" "$C_SLATE" "$C_OFF"
 
 (( BASH_VERSINFO[0] >= 4 )) || die "bash >= 4 required"
 # git + ssh-keygen with whichever package manager this distro has (setup.sh asks the OS family later).

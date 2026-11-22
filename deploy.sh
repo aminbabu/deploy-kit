@@ -71,6 +71,11 @@ SHA="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)"
 STARTED=$SECONDS
 RESULT=failed
 trap 'echo "$(date -Is) env=${ENV_NAME} sha=${SHA} user=${SUDO_USER:-$USER} result=${RESULT} secs=$((SECONDS - STARTED))" >>"${APP_HOME}/shared/deploy.log"' EXIT
+dp_hero "Deploykit" "Deploy ${ENV_NAME}" \
+  "Project|${PROJECT_SLUG}" \
+  "Release|${SHA}" \
+  "Runtime|${RUNTIME}" \
+  "Branch|$(dp_ev "$ENV_NAME" BRANCH)"
 dp_section "Deploy ${ENV_NAME} @ ${SHA} (${RUNTIME} runtime)"
 
 # Keep the env's managed settings in step with state/secrets before building.
@@ -375,4 +380,4 @@ deploy_native() {
 if [[ "$RUNTIME" == "docker" ]]; then deploy_docker; else deploy_native; fi
 dp_check_cors "$ENV_NAME" || true
 RESULT=${RESULT/failed/ok}
-dp_ok "Deployed ${ENV_NAME} @ ${SHA}"
+dp_section_end "Deployed ${ENV_NAME} @ ${SHA} in $((SECONDS - STARTED))s"

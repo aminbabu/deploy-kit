@@ -115,17 +115,33 @@ _dp_ask_catalog_key() {
   elif [[ "${DP_YES:-0}" == "1" ]]; then
     val="$def"
   elif [[ "$kind" == "file" ]]; then
-    read -r -p "  ${CAT_HELP[$key]}: path to the file on this server [${key}$([[ -n "$def" ]] && echo "=${def}")]: " val || true
+    printf '%s%s%s  %s%s%s  %s[%s]%s\n' \
+      "$DP_C_CYN" "$DP_SYM_ASK" "$DP_C_OFF" \
+      "$DP_C_B" "${CAT_HELP[$key]}: path to the file on this server" "$DP_C_OFF" \
+      "$DP_C_SLATE" "${key}$([[ -n "$def" ]] && echo "=${def}")" "$DP_C_OFF"
+    _dp_prompt_read val
     val="${val:-$def}"
   elif [[ "$kind" == "secret" ]]; then
-    read -r -s -p "    ${CAT_HELP[$key]} [${key}]$([[ -n "$def" ]] && echo ' (Enter=keep)'): " val || true; echo
+    printf '%s%s%s  %s%s%s  %s[%s]%s%s\n' \
+      "$DP_C_IND" "$DP_SYM_SEC" "$DP_C_OFF" \
+      "$DP_C_B" "${CAT_HELP[$key]}" "$DP_C_OFF" \
+      "$DP_C_SLATE" "$key" "$([[ -n "$def" ]] && echo ' • Enter=keep')" "$DP_C_OFF"
+    _dp_prompt_secret_read val
     val="${val:-$def}"
   elif [[ "$kind" == select || "$kind" == multi ]]; then
     hint="${CAT_OPTS[$key]// /|}"; [[ "$kind" == multi ]] && hint+="; several comma-separated, none = clear"
-    read -r -p "  ${CAT_HELP[$key]} (${hint}) [${def:-none}]: " val || true
+    printf '%s%s%s  %s%s%s  %s(%s) [%s]%s\n' \
+      "$DP_C_CYN" "$DP_SYM_ASK" "$DP_C_OFF" \
+      "$DP_C_B" "${CAT_HELP[$key]}" "$DP_C_OFF" \
+      "$DP_C_SLATE" "$hint" "${def:-none}" "$DP_C_OFF"
+    _dp_prompt_read val
     val="${val:-$def}"
   else
-    read -r -p "  ${CAT_HELP[$key]} [${key}=${def}]: " val || true
+    printf '%s%s%s  %s%s%s  %s[%s=%s]%s\n' \
+      "$DP_C_CYN" "$DP_SYM_ASK" "$DP_C_OFF" \
+      "$DP_C_B" "${CAT_HELP[$key]}" "$DP_C_OFF" \
+      "$DP_C_SLATE" "$key" "$def" "$DP_C_OFF"
+    _dp_prompt_read val
     val="${val:-$def}"
   fi
   if [[ "$kind" == select || "$kind" == multi ]]; then
@@ -540,20 +556,26 @@ dp_save_state() {
 
 dp_summary() {
   dp_section "Review"
-  printf '  %-18s %s\n' os "$(dp_os_name) (${OS_FAMILY})" project "$PROJECT_SLUG" home "$APP_HOME" repo "${REPO_URL:-$REPO_PATH}" \
-    app "${RUNTIME} runtime, backend ./${BACKEND_DIR}$(dp_fe_on && echo ", frontend ./${FRONTEND_DIR}" || echo ', no frontend')" \
-    database "${DB_ENGINE}${DB_VERSION:+ ${DB_VERSION}} (${DB_MODE})" redis "$REDIS_MODE" storage "$STORAGE_MODE" \
-    "queue worker" "$QUEUE_WORKER" scheduler "$SCHEDULER_ENABLED" \
-    edge "$EDGE_MODE (http ${PUBLIC_HTTP_PORT} / https ${PUBLIC_HTTPS_PORT})" media "${MEDIA_HOST:-<none>}" envs "$ENABLED_ENVS"
+  dp_kv "os" "$(dp_os_name) (${OS_FAMILY})"
+  dp_kv "project" "$PROJECT_SLUG"
+  dp_kv "home" "$APP_HOME"
+  dp_kv "repo" "${REPO_URL:-$REPO_PATH}"
+  dp_kv "app" "${RUNTIME} runtime, backend ./${BACKEND_DIR}$(dp_fe_on && echo ", frontend ./${FRONTEND_DIR}" || echo ', no frontend')"
+  dp_kv "database" "${DB_ENGINE}${DB_VERSION:+ ${DB_VERSION}} (${DB_MODE})"
+  dp_kv "redis" "$REDIS_MODE"
+  dp_kv "storage" "$STORAGE_MODE"
+  dp_kv "queue worker" "$QUEUE_WORKER"
+  dp_kv "scheduler" "$SCHEDULER_ENABLED"
+  dp_kv "edge" "$EDGE_MODE (http ${PUBLIC_HTTP_PORT} / https ${PUBLIC_HTTPS_PORT})"
+  dp_kv "media" "${MEDIA_HOST:-<none>}"
+  dp_kv "envs" "$ENABLED_ENVS"
   local env
   for env in $ENABLED_ENVS; do
-    printf '  %-18s %sapi %s | branch %s | port api %s%s\n' "[$env]" \
-      "$(dp_fe_on && echo "client $(dp_origin "$(dp_ev "$env" FRONTEND_HOST)") | ")" "$(dp_origin "$(dp_ev "$env" API_HOST)")" \
-      "$(dp_ev "$env" BRANCH)" "$(dp_ev "$env" API_PORT)" "$(dp_fe_on && echo " fe $(dp_ev "$env" FRONTEND_PORT)")"
-    printf '  %-18s mail %s | sms %s | payments %s | oauth %s\n' "" "${VALS[$env|MAIL_MAILER]:-?}" \
-      "${VALS[$env|SMS_DEFAULT_DRIVER]:-?}" "${VALS[$env|PAYMENT_GATEWAYS]:-none}" "${VALS[$env|OAUTH_PROVIDERS]:-none}"
+    dp_kv "[$env]" "$(dp_fe_on && echo "client $(dp_origin "$(dp_ev "$env" FRONTEND_HOST)") | ")api $(dp_origin "$(dp_ev "$env" API_HOST)") | branch $(dp_ev "$env" BRANCH) | port api $(dp_ev "$env" API_PORT)$(dp_fe_on && echo " fe $(dp_ev "$env" FRONTEND_PORT)")"
+    dp_kv "" "mail ${VALS[$env|MAIL_MAILER]:-?} | sms ${VALS[$env|SMS_DEFAULT_DRIVER]:-?} | payments ${VALS[$env|PAYMENT_GATEWAYS]:-none} | oauth ${VALS[$env|OAUTH_PROVIDERS]:-none}"
   done
-  echo "  secrets: stored in ${APP_HOME}/shared/secrets.env and <env>/.env (chmod 600), not shown"
+  dp_info "Secrets stored in ${APP_HOME}/shared/secrets.env and <env>/.env (chmod 600)"
+  dp_section_end
 }
 
 dp_apply_envs() { # write catalog values + managed keys for the given envs
@@ -572,7 +594,15 @@ dp_deploy_envs() {
 dp_reload_state() { dp_state_load; dp_secrets_load; }
 
 # One credential line: label, user, password, where to use it.
-_dp_cred() { printf '  %-22s user %-22s password %s\n' "$1" "${2:--}" "$3"; [[ -z "${4:-}" ]] || printf '  %-22s %s\n' "" "$4"; }
+_dp_cred() {
+  printf '%s%s%s  %s%-20s%s user %s%-20s%s pass %s%s%s\n' \
+    "$DP_C_SLATE" "$DP_RAIL" "$DP_C_OFF" \
+    "$DP_C_SKY" "$1" "$DP_C_OFF" \
+    "$DP_C_WHT" "${2:--}" "$DP_C_OFF" \
+    "$DP_C_YEL" "$3" "$DP_C_OFF"
+  [[ -z "${4:-}" ]] || printf '%s%s%s  %-20s %s%s%s\n' \
+    "$DP_C_SLATE" "$DP_RAIL" "$DP_C_OFF" "" "$DP_C_SLATE" "$4" "$DP_C_OFF"
+}
 
 # Print credentials. $1 = space-separated secret names to show (default: all stored).
 dp_print_credentials() {
@@ -597,13 +627,14 @@ dp_print_credentials() {
 # After apply: show the passwords generated in this run, once, with a notice.
 dp_show_generated() {
   [[ -n "${DP_GENERATED:-}" && -n "${DP_GENERATED// }" ]] || return 0
-  dp_section "Generated credentials — save them now"
-  printf '%s  These passwords were generated for you and are shown only this once.%s\n' "$DP_C_YEL" "$DP_C_OFF"
-  printf '%s  Copy them to your password manager.%s\n\n' "$DP_C_YEL" "$DP_C_OFF"
+  dp_box warn "Generated credentials — save them now" \
+    "These passwords were generated for you and are shown only this once." \
+    "Copy them to your password manager."
+  dp_section "Credentials"
   dp_print_credentials "$DP_GENERATED"
-  echo
-  echo "  Stored on this server in $(dp_secrets_file) (chmod 600)."
-  echo "  Show them again later: deploy/setup.sh credentials"
+  dp_info "Stored on this server in $(dp_secrets_file) (chmod 600)."
+  dp_info "Show them again later: deploy/setup.sh credentials"
+  dp_section_end
 }
 
 cmd_credentials() {
@@ -611,7 +642,8 @@ cmd_credentials() {
   dp_yes "Print the stored service passwords on screen?" y || exit 0
   dp_section "Credentials for ${PROJECT_SLUG}"
   dp_print_credentials
-  echo; echo "  Source: $(dp_secrets_file)"
+  dp_info "Source: $(dp_secrets_file)"
+  dp_section_end
 }
 
 # Toolchains + Docker for the chosen modes.
@@ -625,6 +657,9 @@ dp_prepare_host() {
 # Commands
 # ---------------------------------------------------------------------------
 cmd_init() {
+  dp_hero "Deploykit" "Server Setup Wizard" \
+    "Repo|${REPO_ROOT}" \
+    "Host|$(hostname 2>/dev/null || echo localhost)"
   dp_load_existing   # first: the saved OS family is the preflight's default
   if [[ "$SKIP_PREFLIGHT" == "1" ]]; then dp_ask_os; else dp_preflight; fi
   dp_ask_project
@@ -654,13 +689,13 @@ cmd_init() {
     dp_deploy_envs $DEPLOY_NOW
   fi
   dp_show_generated
-  dp_section "Done"
-  echo "  Deploy later:   deploy/deploy.sh <env> [--pull]"
-  echo "  Add an env:     deploy/setup.sh add-env staging"
-  echo "  Change values:  deploy/setup.sh vars <env> | domains | components | steps | rotate-secrets"
-  echo "  CI/CD:          deploy/setup.sh cd-workflow"
-  echo "  Health:         deploy/setup.sh status | doctor"
-  echo "  Superadmin:     deploy/setup.sh seed-admin <env>"
+  dp_box ok "Done — Deploykit is ready" \
+    "Deploy later:   deploy/deploy.sh <env> [--pull]" \
+    "Add an env:     deploy/setup.sh add-env staging" \
+    "Change values:  deploy/setup.sh vars <env> | domains | components | steps | rotate-secrets" \
+    "CI/CD:          deploy/setup.sh cd-workflow" \
+    "Health:         deploy/setup.sh status | doctor" \
+    "Superadmin:     deploy/setup.sh seed-admin <env>"
 }
 
 cmd_add_env() {
@@ -770,7 +805,13 @@ cmd_seed_admin() {
   for tok in $tpl; do
     if [[ "$tok" =~ ^\{([A-Za-z0-9_-]+)\??\}$ ]]; then
       name="${BASH_REMATCH[1]}"
-      if [[ "$name" =~ pass|secret ]]; then read -r -s -p "  ${name}: " val; echo; else read -r -p "  ${name}: " val; fi
+      if [[ "$name" =~ pass|secret ]]; then
+        printf '%s%s%s  %s%s%s\n' "$DP_C_IND" "$DP_SYM_SEC" "$DP_C_OFF" "$DP_C_B" "$name" "$DP_C_OFF"
+        _dp_prompt_secret_read val
+      else
+        printf '%s%s%s  %s%s%s\n' "$DP_C_CYN" "$DP_SYM_ASK" "$DP_C_OFF" "$DP_C_B" "$name" "$DP_C_OFF"
+        _dp_prompt_read val
+      fi
       args+=("$val")
     else
       args+=("$tok")
@@ -898,43 +939,68 @@ cmd_rotate_secrets() {
 
 cmd_status() {
   dp_load_existing; dp_reload_state
-  dp_section "${PROJECT_SLUG} — ${RUNTIME} app, ${DB_ENGINE}:${DB_MODE}, redis:${REDIS_MODE}, storage:${STORAGE_MODE}, ${EDGE_MODE} edge"
+  dp_hero "Deploykit" "Status • ${PROJECT_SLUG}" \
+    "Runtime|${RUNTIME} (${BACKEND_STACK:-laravel}$(dp_fe_on && echo " + ${FRONTEND_STACK:-next}"))" \
+    "Data|${DB_ENGINE}:${DB_MODE}  redis:${REDIS_MODE}  storage:${STORAGE_MODE}" \
+    "Edge|${EDGE_MODE}" \
+    "Disk free|$(df -h "$APP_HOME" | awk 'NR==2 { print $4 }')"
+  dp_section "Environments"
   local env u
   for env in $ENABLED_ENVS; do
-    local api fe sha
+    local api fe sha api_b fe_b=""
     api="$(dp_ev "$env" API_PORT)"; fe="$(dp_ev "$env" FRONTEND_PORT)"; sha="$(dp_ev "$env" DEPLOYED_SHA)"
-    printf '  %-12s release %-14s api:%s %s' "$env" "${sha:-<none>}" "$api" \
-      "$(curl -fsS -o /dev/null --max-time 5 -H "Host: $(dp_ev "$env" API_HOST)" "http://127.0.0.1:${api}/up" && echo up || echo DOWN)"
-    dp_fe_on && printf '  fe:%s %s' "$fe" "$(curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${fe}/" && echo up || echo DOWN)"
-    echo
+    if curl -fsS -o /dev/null --max-time 5 -H "Host: $(dp_ev "$env" API_HOST)" "http://127.0.0.1:${api}/up" 2>/dev/null; then
+      api_b="$(dp_badge ok "UP")"
+    else
+      api_b="$(dp_badge err "DOWN")"
+    fi
+    if dp_fe_on; then
+      if curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${fe}/" 2>/dev/null; then
+        fe_b="  fe:${fe} $(dp_badge ok "UP")"
+      else
+        fe_b="  fe:${fe} $(dp_badge err "DOWN")"
+      fi
+    fi
+    printf '%s%s%s  %s%-12s%s %srelease %-12s%s api:%s %s%s\n' \
+      "$DP_C_SLATE" "$DP_RAIL" "$DP_C_OFF" \
+      "$DP_C_B" "$env" "$DP_C_OFF" \
+      "$DP_C_SLATE" "${sha:-<none>}" "$DP_C_OFF" \
+      "$api" "$api_b" "$fe_b"
     if [[ "$RUNTIME" == "docker" ]]; then docker compose -p "${PROJECT_SLUG}-${env}" ps --format '    {{.Service}}: {{.State}} {{.Health}}' 2>/dev/null || true
     else
       for u in frontend worker scheduler; do
-        dp_userctl cat "${PROJECT_SLUG}-${u}-${env}" >/dev/null 2>&1 && printf '    %s: %s\n' "$u" "$(dp_userctl is-active "${PROJECT_SLUG}-${u}-${env}" 2>/dev/null)"
+        dp_userctl cat "${PROJECT_SLUG}-${u}-${env}" >/dev/null 2>&1 && dp_kv "  ${u}" "$(dp_userctl is-active "${PROJECT_SLUG}-${u}-${env}" 2>/dev/null)"
       done
     fi
-    printf '    backups: %s\n' "$(ls "${APP_HOME}/backups/${env}" 2>/dev/null | wc -l | xargs)"
+    dp_kv "  backups" "$(ls "${APP_HOME}/backups/${env}" 2>/dev/null | wc -l | xargs)"
   done
   [[ -n "$(dp_services_profiles)" ]] && dp_services_compose ps --format '  docker {{.Service}}: {{.State}} {{.Health}}' 2>/dev/null
   [[ $REDIS_MODE == native ]] && dp_redis_layout
   for u in $([[ $DB_MODE == native ]] && { [[ $DB_ENGINE == mysql ]] && echo mariadb || dp_pg_service; }) \
            $([[ $REDIS_MODE == native ]] && echo "$DP_REDIS_SERVICE") $([[ "$(dp_minio_mode)" == native ]] && echo "${PROJECT_SLUG}-minio"); do
-    printf '  native %s: %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"
+    dp_kv "native ${u}" "$(systemctl is-active "$u" 2>/dev/null)"
   done
   if [[ "$EDGE_MODE" == "certbot" ]]; then
     local host _
     while read -r host _; do
       local end; end="$(sudo openssl x509 -enddate -noout -in "/etc/letsencrypt/live/${host}/fullchain.pem" 2>/dev/null | cut -d= -f2)"
-      printf '  cert %-36s %s\n' "$host" "${end:-MISSING}"
+      dp_kv "cert ${host}" "${end:-MISSING}"
     done < <(dp_edge_sites)
   fi
-  printf '  disk free: %s\n' "$(df -h "$APP_HOME" | awk 'NR==2 { print $4 }')"
-  echo "  recent deploys:"; tail -n 5 "${APP_HOME}/shared/deploy.log" 2>/dev/null | sed 's/^/    /' || true
+  dp_section_end
+  if [[ -f "${APP_HOME}/shared/deploy.log" ]]; then
+    dp_section "Recent deploys"
+    tail -n 5 "${APP_HOME}/shared/deploy.log" 2>/dev/null | sed "s/^/${DP_C_SLATE}${DP_RAIL}${DP_C_OFF}  /" || true
+    dp_section_end
+  fi
 }
 
 cmd_doctor() {
   dp_load_existing; dp_reload_state
-  dp_section "Doctor"
+  dp_hero "Deploykit" "Doctor • ${PROJECT_SLUG}" \
+    "Runtime|${RUNTIME}" \
+    "Edge|${EDGE_MODE}"
+  dp_section "Diagnostics"
   local env host _ rc=0
   [[ "$(stat -c %a "$(dp_secrets_file)" 2>/dev/null || stat -f %Lp "$(dp_secrets_file)")" == 600 ]] && dp_ok "secrets.env is 600" || { dp_warn "secrets.env permissions are not 600"; rc=1; }
   if dp_needs_docker; then
@@ -954,7 +1020,7 @@ cmd_doctor() {
     dp_port_in_use "$(dp_ev "$env" API_PORT)" && dp_ok "${env}: API port listening" || { dp_warn "${env}: nothing on API port $(dp_ev "$env" API_PORT)"; rc=1; }
     dp_check_cors "$env" || rc=1
   done
-  (( rc == 0 )) && dp_ok "all checks passed" || dp_warn "some checks need attention"
+  (( rc == 0 )) && dp_section_end "all checks passed" || dp_warn "some checks need attention"
   return $rc
 }
 
